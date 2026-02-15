@@ -1,0 +1,151 @@
+// Bossman - AI Company Management Platform
+// Prisma Schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Company ─────────────────────────────────────────────────────────────────
+
+model Company {
+  id          String     @id @default(cuid())
+  name        String
+  description String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  employees   Employee[]
+  projects    Project[]
+}
+
+// ─── Agent Role (template) ───────────────────────────────────────────────────
+
+model AgentRole {
+  id           String     @id @default(cuid())
+  name         String     @unique // e.g. "ceo", "frontend-dev"
+  title        String // e.g. "CEO", "Frontend Developer"
+  systemPrompt String
+  modelConfig  String // JSON string: { provider, model, temperature, ... }
+  capabilities String? // JSON string: available tools/capabilities
+  isBuiltin    Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  employees    Employee[]
+}
+
+// ─── Employee (Agent instance in a company) ──────────────────────────────────
+
+model Employee {
+  id             String           @id @default(cuid())
+  companyId      String
+  roleId         String
+  name           String
+  status         String           @default("idle") // idle, busy, offline
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  company        Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role           AgentRole        @relation(fields: [roleId], references: [id])
+  assignments    TaskAssignment[]
+  messages       Message[]        @relation("SenderMessages")
+  tokenUsages    TokenUsage[]
+  directMessages DirectMessage[]
+}
+
+// ─── Project ─────────────────────────────────────────────────────────────────
+
+model Project {
+  id          String       @id @default(cuid())
+  companyId   String
+  name        String
+  description String       @default("")
+  document    String?      // Markdown: project document produced by the team during project initiation
+  status      String       @default("planning") // planning, in_progress, review, completed, failed
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tasks       Task[]
+  messages    Message[]
+  tokenUsages TokenUsage[]
+}
+
+// ─── Task ────────────────────────────────────────────────────────────────────
+
+model Task {
+  id          String           @id @default(cuid())
+  projectId   String
+  parentId    String? // for sub-tasks
+  title       String
+  description String
+  status      String           @default("pending") // pending, assigned, in_progress, review, completed, blocked
+  priority    Int              @default(0) // higher = more important
+  output      String? // agent's deliverable / result
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent      Task?            @relation("SubTasks", fields: [parentId], references: [id])
+  subTasks    Task[]           @relation("SubTasks")
+  assignments TaskAssignment[]
+  messages    Message[]
+}
+
+// ─── Task Assignment ─────────────────────────────────────────────────────────
+
+model TaskAssignment {
+  id         String   @id @default(cuid())
+  taskId     String
+  employeeId String
+  assignedAt DateTime @default(now())
+  task       Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, employeeId])
+}
+
+// ─── Message ─────────────────────────────────────────────────────────────────
+
+model Message {
+  id         String   @id @default(cuid())
+  projectId  String
+  taskId     String?
+  senderId   String? // null for system / founder messages
+  senderType String // "founder", "agent", "system"
+  content    String
+  metadata   String? // JSON string: additional data
+  createdAt  DateTime @default(now())
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task       Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  sender     Employee? @relation("SenderMessages", fields: [senderId], references: [id], onDelete: SetNull)
+}
+
+// ─── Direct Message (1:1 chat with employees) ──────────────────────────────
+
+model DirectMessage {
+  id         String   @id @default(cuid())
+  employeeId String
+  role       String // "user" or "assistant"
+  content    String
+  metadata   String? // JSON string: { images: ["data:image/..."] }
+  createdAt  DateTime @default(now())
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+// ─── Token Usage ─────────────────────────────────────────────────────────────
+
+model TokenUsage {
+  id           String   @id @default(cuid())
+  employeeId   String
+  projectId    String?
+  model        String
+  provider     String
+  inputTokens  Int
+  outputTokens Int
+  cost         Float? // estimated cost in USD
+  createdAt    DateTime @default(now())
+  employee     Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  project      Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+}
