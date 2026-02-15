@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { Header } from "@/components/layout/header";
+import { useTranslation } from "@/lib/i18n";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Coins, TrendingUp, Hash, DollarSign, BarChart3 } from "lucide-react";
+import { Coins, Hash, BarChart3 } from "lucide-react";
 
 interface TokenAnalytics {
   total: {
@@ -36,6 +37,7 @@ interface TokenAnalytics {
 }
 
 export default function AnalyticsPage() {
+  const { t } = useTranslation();
   const [data, setData] = useState<TokenAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -57,23 +59,23 @@ export default function AnalyticsPage() {
   return (
     <div>
       <Header
-        title="Analytics"
-        description="Token usage and cost tracking"
+        title={t("analytics.title")}
+        description={t("analytics.description")}
       />
 
       <div className="p-6 space-y-6">
         {loading ? (
           <div className="text-center py-12 text-muted-foreground">
-            Loading analytics...
+            {t("analytics.loading")}
           </div>
         ) : (
           <>
             {/* Summary Cards */}
-            <div className="grid gap-4 md:grid-cols-4">
+            <div className="grid gap-4 md:grid-cols-2">
               <Card>
                 <CardHeader className="flex flex-row items-center justify-between pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Total Tokens
+                    {t("analytics.totalTokens")}
                   </CardTitle>
                   <Coins className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
@@ -82,8 +84,8 @@ export default function AnalyticsPage() {
                     {total.totalTokens.toLocaleString()}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    {total.inputTokens.toLocaleString()} in /{" "}
-                    {total.outputTokens.toLocaleString()} out
+                    {total.inputTokens.toLocaleString()} {t("analytics.tokensIn")} /{" "}
+                    {total.outputTokens.toLocaleString()} {t("analytics.tokensOut")}
                   </p>
                 </CardContent>
               </Card>
@@ -91,40 +93,12 @@ export default function AnalyticsPage() {
               <Card>
                 <CardHeader className="flex flex-row items-center justify-between pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Input Tokens
-                  </CardTitle>
-                  <TrendingUp className="h-4 w-4 text-muted-foreground" />
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold">
-                    {total.inputTokens.toLocaleString()}
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    LLM Calls
+                    {t("analytics.llmCalls")}
                   </CardTitle>
                   <Hash className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold">{total.calls}</div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Estimated Cost
-                  </CardTitle>
-                  <DollarSign className="h-4 w-4 text-muted-foreground" />
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold">
-                    ${total.cost.toFixed(4)}
-                  </div>
                 </CardContent>
               </Card>
             </div>
@@ -134,13 +108,13 @@ export default function AnalyticsPage() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <BarChart3 className="h-5 w-5" />
-                  Usage by Agent
+                  {t("analytics.usageByAgent")}
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 {!data?.byEmployee?.length ? (
                   <div className="text-center py-8 text-muted-foreground">
-                    No token usage data yet. Start a project to see analytics.
+                    {t("analytics.noData")}
                   </div>
                 ) : (
                   <>
@@ -168,7 +142,7 @@ export default function AnalyticsPage() {
                                 </Badge>
                               </div>
                               <span className="text-muted-foreground">
-                                {totalTokens.toLocaleString()} tokens
+                                {totalTokens.toLocaleString()} {t("analytics.tokens")}
                               </span>
                             </div>
                             <div className="h-2 bg-muted rounded-full overflow-hidden">
@@ -188,22 +162,22 @@ export default function AnalyticsPage() {
                         <thead>
                           <tr className="border-b">
                             <th className="text-left py-3 px-2 font-medium">
-                              Agent
+                              {t("analytics.agent")}
                             </th>
                             <th className="text-left py-3 px-2 font-medium">
-                              Role
+                              {t("analytics.role")}
                             </th>
                             <th className="text-right py-3 px-2 font-medium">
-                              Input
+                              {t("analytics.input")}
                             </th>
                             <th className="text-right py-3 px-2 font-medium">
-                              Output
+                              {t("analytics.output")}
                             </th>
                             <th className="text-right py-3 px-2 font-medium">
-                              Calls
+                              {t("analytics.calls")}
                             </th>
                             <th className="text-right py-3 px-2 font-medium">
-                              Cost
+                              {t("analytics.cost")}
                             </th>
                           </tr>
                         </thead>
@@ -242,7 +216,7 @@ export default function AnalyticsPage() {
             {data?.recent && data.recent.length > 0 && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Recent LLM Calls</CardTitle>
+                  <CardTitle>{t("analytics.recentLlmCalls")}</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-2">
@@ -273,7 +247,7 @@ export default function AnalyticsPage() {
                             {(
                               r.inputTokens + r.outputTokens
                             ).toLocaleString()}{" "}
-                            tokens
+                            {t("analytics.tokens")}
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {new Date(r.createdAt).toLocaleString()}

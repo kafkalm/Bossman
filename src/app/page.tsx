@@ -24,6 +24,8 @@ import {
   Rocket,
 } from "lucide-react";
 import Link from "next/link";
+import { getEmployeeStatusColor, getProjectStatusColor } from "@/lib/constants";
+import { useTranslation } from "@/lib/i18n";
 
 interface Employee {
   id: string;
@@ -51,6 +53,7 @@ const DESC_MAX = 200;
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { t } = useTranslation();
   const [company, setCompany] = useState<Company | null>(null);
   const [loading, setLoading] = useState(true);
   const [setupName, setSetupName] = useState("");
@@ -113,11 +116,11 @@ export default function DashboardPage() {
       });
       if (res.ok) {
         const project = await res.json();
-        router.push(`/project/${project.id}`);
+        setProjectDialogOpen(false);
+        window.location.href = `/project/${project.id}`;
       }
     } finally {
       setCreatingProject(false);
-      setProjectDialogOpen(false);
     }
   };
 
@@ -183,18 +186,11 @@ export default function DashboardPage() {
     );
   }
 
-  // Dashboard view
-  const statusColors: Record<string, string> = {
-    idle: "bg-gray-400",
-    busy: "bg-green-500",
-    offline: "bg-red-400",
-  };
-
   return (
     <div>
       <Header
         title={company.name}
-        description={company.description ?? "Your AI Company"}
+        description={company.description ?? t("dashboard.description")}
         actions={
           <Dialog
             open={projectDialogOpen}
@@ -203,23 +199,23 @@ export default function DashboardPage() {
             <DialogTrigger asChild>
               <Button>
                 <Plus className="h-4 w-4 mr-1" />
-                New Project
+                {t("dashboard.newProject")}
               </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Create New Project</DialogTitle>
+                <DialogTitle>{t("dashboard.createProjectTitle")}</DialogTitle>
                 <p className="text-sm text-muted-foreground mt-1">
-                  输入项目名称即可创建，CEO 将自动发起立项并协调团队完成项目文档。
+                  {t("dashboard.createProjectHint")}
                 </p>
               </DialogHeader>
               <div className="space-y-4 pt-2">
                 <div>
-                  <label className="text-sm font-medium">Project Name</label>
+                  <label className="text-sm font-medium">{t("dashboard.projectNameLabel")}</label>
                   <Input
                     value={projectName}
                     onChange={(e) => setProjectName(e.target.value)}
-                    placeholder="E.g. E-commerce Platform"
+                    placeholder={t("dashboard.projectNamePlaceholder")}
                     className="mt-1"
                     autoFocus
                   />
@@ -227,10 +223,7 @@ export default function DashboardPage() {
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-sm font-medium">
-                      Brief Description{" "}
-                      <span className="text-muted-foreground font-normal">
-                        (Optional)
-                      </span>
+                      {t("dashboard.briefDescOptional")}
                     </label>
                     <span
                       className={`text-xs ${
@@ -249,7 +242,7 @@ export default function DashboardPage() {
                         setProjectDesc(e.target.value);
                       }
                     }}
-                    placeholder="简要描述项目方向或想法，CEO 会据此展开详细规划..."
+                    placeholder={t("dashboard.briefDescPlaceholder")}
                     className="mt-1 resize-none"
                     rows={3}
                   />
@@ -259,7 +252,7 @@ export default function DashboardPage() {
                   disabled={!projectName.trim() || creatingProject}
                   className="w-full"
                 >
-                  {creatingProject ? "Creating..." : "Create Project"}
+                  {creatingProject ? t("dashboard.creatingProject") : t("dashboard.createProjectButton")}
                 </Button>
               </div>
             </DialogContent>
@@ -273,7 +266,7 @@ export default function DashboardPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                Company
+                {t("dashboard.company")}
               </CardTitle>
               <Building2 className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
@@ -285,7 +278,7 @@ export default function DashboardPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                Projects
+                {t("dashboard.projectsCard")}
               </CardTitle>
               <FolderKanban className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
@@ -299,7 +292,7 @@ export default function DashboardPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                Team Members
+                {t("dashboard.teamMembers")}
               </CardTitle>
               <Users className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
@@ -313,14 +306,14 @@ export default function DashboardPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                Token Usage
+                {t("dashboard.tokenUsage")}
               </CardTitle>
               <Coins className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">-</div>
               <p className="text-xs text-muted-foreground">
-                Check analytics for details
+                {t("dashboard.analyticsDetail")}
               </p>
             </CardContent>
           </Card>
@@ -331,11 +324,11 @@ export default function DashboardPage() {
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2">
               <Users className="h-5 w-5" />
-              Team ({company.employees.length})
+              {t("team.title")} ({company.employees.length})
             </CardTitle>
             <Link href="/team">
               <Button variant="outline" size="sm">
-                Manage Team
+                {t("dashboard.manageTeam")}
               </Button>
             </Link>
           </CardHeader>
@@ -357,10 +350,10 @@ export default function DashboardPage() {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <div
-                      className={`h-2 w-2 rounded-full ${statusColors[emp.status] ?? "bg-gray-400"}`}
+                      className={`h-2 w-2 rounded-full ${getEmployeeStatusColor(emp.status)}`}
                     />
-                    <span className="text-xs text-muted-foreground capitalize">
-                      {emp.status}
+                    <span className="text-xs text-muted-foreground">
+                      {t(`team.${emp.status}`)}
                     </span>
                   </div>
                 </div>
@@ -374,20 +367,20 @@ export default function DashboardPage() {
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2">
               <FolderKanban className="h-5 w-5" />
-              Recent Projects
+              {t("dashboard.recentProjects")}
             </CardTitle>
             <Link href="/project">
               <Button variant="outline" size="sm">
-                View All
+                {t("common.viewAll")}
               </Button>
             </Link>
           </CardHeader>
           <CardContent>
             {company.projects.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
-                <p>No projects yet.</p>
+                <p>{t("dashboard.noProjects")}</p>
                 <p className="text-sm mt-1">
-                  Click &quot;New Project&quot; to get started.
+                  {t("dashboard.createFirst")}
                 </p>
               </div>
             ) : (
@@ -419,28 +412,10 @@ export default function DashboardPage() {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const variants: Record<
-    string,
-    "default" | "secondary" | "destructive" | "outline"
-  > = {
-    planning: "secondary",
-    in_progress: "default",
-    review: "outline",
-    completed: "default",
-    failed: "destructive",
-  };
-
-  const labels: Record<string, string> = {
-    planning: "Planning",
-    in_progress: "In Progress",
-    review: "Review",
-    completed: "Completed",
-    failed: "Failed",
-  };
-
+  const { t } = useTranslation();
   return (
-    <Badge variant={variants[status] ?? "secondary"}>
-      {labels[status] ?? status}
+    <Badge variant="outline" className={getProjectStatusColor(status)}>
+      {t(`taskStatus.${status}`)}
     </Badge>
   );
 }

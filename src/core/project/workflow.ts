@@ -21,6 +21,36 @@ import type { AgentEvent } from "@/core/agent/types";
 
 const MAX_LOOP_ITERATIONS = 20;
 
+/** Max retries for task execution when LLM/API fails. */
+const TASK_EXECUTION_MAX_RETRIES = 3;
+
+/** Delay in ms before each retry (exponential: 2s, 4s, 8s). */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryTaskExecution<T>(
+  fn: () => Promise<T>,
+  onRetry?: (attempt: number, error: unknown) => void
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < TASK_EXECUTION_MAX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt < TASK_EXECUTION_MAX_RETRIES - 1) {
+        const delayMs = 2000 * Math.pow(2, attempt);
+        onRetry?.(attempt + 1, error);
+        await sleep(delayMs);
+      } else {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
+}
+
 export class ProjectWorkflow {
   private eventHandlers: ((event: AgentEvent) => void)[] = [];
 
@@ -67,6 +97,14 @@ export class ProjectWorkflow {
     await projectManager.updateStatus(projectId, "in_progress");
 
     // Enter the autonomous loop
+    await this.runProjectLoop(projectId);
+  }
+
+  /**
+   * Resume the CEO loop for an in-progress project.
+   * Call this on startup to continue any projects that were interrupted.
+   */
+  async resumeProject(projectId: string): Promise<void> {
     await this.runProjectLoop(projectId);
   }
 
@@ -206,8 +244,14 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
           );
           if (shouldStop) break;
         } else {
-          // CEO made no tool calls – it has nothing more to do.
-          // If this is not the first iteration, the loop is done.
+          // CEO made no tool calls. Only treat as "completed" when no tasks need attention.
+          const tasksNeedingAttention = project.tasks.filter((t) =>
+            ["assigned", "in_progress", "review", "blocked"].includes(t.status)
+          );
+          if (tasksNeedingAttention.length > 0) {
+            // CEO should be acting on these tasks; give another iteration
+            continue;
+          }
           if (iteration > 0) {
             await messageBus.send({
               projectId,
@@ -240,6 +284,7 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
 
   /**
    * Process all tool calls from the CEO. Returns true if the project should stop.
+   * assign_task calls are batched: create+assign all first, then execute concurrently.
    */
   private async processToolCalls(
     projectId: string,
@@ -256,64 +301,97 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
   ): Promise<boolean> {
     let shouldStop = false;
 
+    // Phase 1: Process all assign_task — create and assign, collect for concurrent execution
+    const tasksToExecute: { taskId: string; taskTitle: string }[] = [];
+    for (const tc of toolCalls) {
+      if (tc.name !== "assign_task") continue;
+      const { roleName, taskTitle, taskDescription, priority } =
+        tc.args as {
+          roleName: string;
+          taskTitle: string;
+          taskDescription: string;
+          priority?: number;
+        };
+
+      const employee = employees.find((e) => e.role.name === roleName);
+      if (!employee) {
+        console.warn(`No employee found with role: ${roleName}`);
+        await messageBus.send({
+          projectId,
+          senderType: "system",
+          messageType: "status_update",
+          content: `⚠️ Could not assign task "${taskTitle}" — no employee with role "${roleName}" found.`,
+        });
+        continue;
+      }
+
+      const task = await projectManager.createTask({
+        projectId,
+        title: taskTitle,
+        description: taskDescription,
+        priority: priority ?? 5,
+      });
+
+      await projectManager.assignTask(task.id, employee.id);
+
+      await messageBus.send({
+        projectId,
+        taskId: task.id,
+        senderType: "system",
+        messageType: "task_assignment",
+        content: `Task "${taskTitle}" has been assigned to ${employee.name} (${employee.role.title}).`,
+        metadata: { taskId: task.id, employeeId: employee.id },
+      });
+
+      tasksToExecute.push({ taskId: task.id, taskTitle });
+    }
+
+    // Phase 2: Execute all assigned tasks concurrently
+    if (tasksToExecute.length > 0) {
+      await Promise.all(
+        tasksToExecute.map(({ taskId, taskTitle }) =>
+          (async () => {
+            try {
+              await retryTaskExecution(
+                () => this.executeTask(taskId),
+                (attempt, error) => {
+                  console.warn(
+                    `Task ${taskId} attempt ${attempt} failed, retrying:`,
+                    error
+                  );
+                  messageBus
+                    .send({
+                      projectId,
+                      taskId,
+                      senderType: "system",
+                      messageType: "status_update",
+                      content: `Task "${taskTitle}" failed (attempt ${attempt}/${TASK_EXECUTION_MAX_RETRIES}), retrying in a few seconds...`,
+                    })
+                    .catch(() => {});
+                }
+              );
+            } catch (error) {
+              console.error(`Task execution failed for ${taskId}:`, error);
+              await projectManager.updateTaskStatus(taskId, "blocked");
+              await messageBus.send({
+                projectId,
+                taskId,
+                senderType: "system",
+                messageType: "status_update",
+                content: `Task "${taskTitle}" execution failed after ${TASK_EXECUTION_MAX_RETRIES} attempts: ${error instanceof Error ? error.message : "Unknown error"}`,
+              });
+            }
+          })()
+        )
+      );
+    }
+
+    // Phase 3: Process remaining tool calls
     for (const tc of toolCalls) {
       switch (tc.name) {
-        // ── Assign Task ──
-        case "assign_task": {
-          const { roleName, taskTitle, taskDescription, priority } =
-            tc.args as {
-              roleName: string;
-              taskTitle: string;
-              taskDescription: string;
-              priority?: number;
-            };
-
-          const employee = employees.find((e) => e.role.name === roleName);
-          if (!employee) {
-            console.warn(`No employee found with role: ${roleName}`);
-            await messageBus.send({
-              projectId,
-              senderType: "system",
-              messageType: "status_update",
-              content: `⚠️ Could not assign task "${taskTitle}" — no employee with role "${roleName}" found.`,
-            });
-            continue;
-          }
-
-          const task = await projectManager.createTask({
-            projectId,
-            title: taskTitle,
-            description: taskDescription,
-            priority: priority ?? 5,
-          });
-
-          await projectManager.assignTask(task.id, employee.id);
-
-          await messageBus.send({
-            projectId,
-            taskId: task.id,
-            senderType: "system",
-            messageType: "task_assignment",
-            content: `Task "${taskTitle}" has been assigned to ${employee.name} (${employee.role.title}).`,
-            metadata: { taskId: task.id, employeeId: employee.id },
-          });
-
-          // Execute the task immediately
-          try {
-            await this.executeTask(task.id);
-          } catch (error) {
-            console.error(`Task execution failed for ${task.id}:`, error);
-            await projectManager.updateTaskStatus(task.id, "blocked");
-            await messageBus.send({
-              projectId,
-              taskId: task.id,
-              senderType: "system",
-              messageType: "status_update",
-              content: `Task "${taskTitle}" execution failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-            });
-          }
+        case "assign_task":
+          // Already handled above
           break;
-        }
 
         // ── Save Project Document ──
         case "save_project_document": {
@@ -363,6 +441,97 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
           break;
         }
 
+        // ── Request Revision (CEO reviews deliverable, sends back for improvement) ──
+        case "request_revision": {
+          const { taskId: revisionTaskId, feedback } = tc.args as {
+            taskId: string;
+            feedback: string;
+          };
+          const revisionTask = await prisma.task.findUnique({
+            where: { id: revisionTaskId },
+            include: {
+              assignments: {
+                include: { employee: { include: { role: true } } },
+              },
+              project: true,
+            },
+          });
+          if (!revisionTask || revisionTask.projectId !== projectId) {
+            console.warn(`Task ${revisionTaskId} not found or not in this project`);
+            break;
+          }
+          if (revisionTask.assignments.length === 0) {
+            console.warn(`Task ${revisionTaskId} has no assignee`);
+            break;
+          }
+          const assignee = revisionTask.assignments[0].employee;
+          await prisma.task.update({
+            where: { id: revisionTaskId },
+            data: { status: "in_progress", output: null },
+          });
+          await messageBus.send({
+            projectId,
+            taskId: revisionTaskId,
+            senderType: "system",
+            messageType: "status_update",
+            content: `[CEO 要求修改] ${assignee.name} 的《${revisionTask.title}》质量不达标，需根据反馈重新编写。`,
+          });
+          await messageBus.send({
+            projectId,
+            taskId: revisionTaskId,
+            senderType: "system",
+            messageType: "discussion",
+            content: `[CEO 反馈 - 请按要求修改后重新提交]\n\n${feedback}`,
+          });
+          try {
+            await retryTaskExecution(() =>
+              this.executeTask(revisionTaskId)
+            );
+          } catch (error) {
+            console.error(`Revision execution failed for ${revisionTaskId}:`, error);
+            await projectManager.updateTaskStatus(revisionTaskId, "blocked");
+            await messageBus.send({
+              projectId,
+              taskId: revisionTaskId,
+              senderType: "system",
+              messageType: "status_update",
+              content: `修改任务执行失败: ${error instanceof Error ? error.message : "Unknown error"}`,
+            });
+          }
+          break;
+        }
+
+        // ── Approve Task (CEO confirms deliverable is satisfactory, task is done) ──
+        case "approve_task": {
+          const { taskId: approveTaskId, comment } = tc.args as {
+            taskId: string;
+            comment?: string;
+          };
+          const approveTask = await prisma.task.findUnique({
+            where: { id: approveTaskId },
+            include: {
+              assignments: { include: { employee: true } },
+            },
+          });
+          if (!approveTask || approveTask.projectId !== projectId) {
+            console.warn(`Task ${approveTaskId} not found or not in this project`);
+            break;
+          }
+          await projectManager.updateTaskStatus(approveTaskId, "completed");
+          const assignee = approveTask.assignments[0]?.employee;
+          const who = assignee ? assignee.name : "assignee";
+          await messageBus.send({
+            projectId,
+            taskId: approveTaskId,
+            senderType: "system",
+            messageType: "status_update",
+            content: comment
+              ? `[CEO 已通过] ${approveTask.title}（${who}）— ${comment}`
+              : `[CEO 已通过] ${approveTask.title}（${who}）交付已确认。`,
+          });
+          break;
+        }
+
         // ── Request Info ──
         case "request_info": {
           const { roleName: infoRoleName, question } = tc.args as {
@@ -373,20 +542,73 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
             (e) => e.role.name === infoRoleName
           );
           if (infoEmployee) {
-            const infoResult = await agentRuntime.run({
-              employeeId: infoEmployee.id,
-              projectId,
-              additionalMessages: [
-                { role: "user", content: `[CEO asks]: ${question}` },
-              ],
-            });
-            if (infoResult.content) {
+            try {
+              const infoResult = await retryTaskExecution(() =>
+                agentRuntime.run({
+                  employeeId: infoEmployee.id,
+                  projectId,
+                  additionalMessages: [
+                    { role: "user", content: `[CEO asks]: ${question}` },
+                  ],
+                })
+              );
+              if (infoResult.content) {
+                const DOC_THRESHOLD = 150;
+                const looksLikeDoc =
+                  infoResult.content.includes("##") ||
+                  infoResult.content.startsWith("# ");
+                if (
+                  infoResult.content.length > DOC_THRESHOLD ||
+                  looksLikeDoc
+                ) {
+                  const brief =
+                    infoResult.content.length > 80
+                      ? infoResult.content.slice(0, 80).trim() + "…"
+                      : infoResult.content;
+                  const title =
+                    question.length > 40
+                      ? question.slice(0, 40).trim() + "…"
+                      : question;
+                  const file = await prisma.projectFile.create({
+                    data: {
+                      projectId,
+                      employeeId: infoEmployee.id,
+                      taskId: null,
+                      title: `${infoEmployee.name} 回复：${title}`,
+                      content: infoResult.content,
+                      brief,
+                      fileType: "document",
+                    },
+                  });
+                  await messageBus.send({
+                    projectId,
+                    senderId: infoEmployee.id,
+                    senderType: "agent",
+                    messageType: "deliverable",
+                    content: `[${infoEmployee.name} replies to CEO] ${brief} → 查看文档`,
+                    metadata: {
+                      fileId: file.id,
+                      brief,
+                      fileType: "document",
+                    },
+                  });
+                } else {
+                  await messageBus.send({
+                    projectId,
+                    senderId: infoEmployee.id,
+                    senderType: "agent",
+                    messageType: "discussion",
+                    content: `[${infoEmployee.name} replies to CEO]: ${infoResult.content}`,
+                  });
+                }
+              }
+            } catch (error) {
+              console.error(`request_info from ${infoRoleName} failed:`, error);
               await messageBus.send({
                 projectId,
-                senderId: infoEmployee.id,
-                senderType: "agent",
-                messageType: "discussion",
-                content: `[${infoEmployee.name} replies to CEO]: ${infoResult.content}`,
+                senderType: "system",
+                messageType: "status_update",
+                content: `Request to ${infoEmployee.name} failed: ${error instanceof Error ? error.message : "Unknown error"}`,
               });
             }
           }
@@ -431,18 +653,60 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
       tools: agentTools,
     });
 
+    let taskOutput: string | null = null;
+
+    const createFileAndShortMessage = async (
+      content: string,
+      title: string,
+      fileType: "document" | "code" = "document"
+    ): Promise<string> => {
+      const brief =
+        content.length > 80 ? content.slice(0, 80).trim() + "…" : content;
+      const file = await prisma.projectFile.create({
+        data: {
+          projectId: task.projectId,
+          employeeId: employee.id,
+          taskId: task.id,
+          title,
+          content,
+          brief,
+          fileType,
+        },
+      });
+      const tabLabel = fileType === "code" ? "查看代码" : "查看文档";
+      await messageBus.send({
+        projectId: task.projectId,
+        taskId: task.id,
+        senderId: employee.id,
+        senderType: "agent",
+        messageType: "deliverable",
+        content: `[${employee.name}] 已提交《${title}》→ ${tabLabel}`,
+        metadata: { fileId: file.id, brief, fileType },
+      });
+      return file.id;
+    };
+
     if (result.toolCalls) {
+      const reports: string[] = [];
       for (const tc of result.toolCalls) {
         if (tc.name === "report_to_ceo") {
           const { report } = tc.args as { report: string };
-          await messageBus.send({
-            projectId: task.projectId,
-            taskId: task.id,
-            senderId: employee.id,
-            senderType: "agent",
-            messageType: "deliverable",
-            content: `[${employee.name} reports to CEO]: ${report}`,
-          });
+          reports.push(report);
+          await createFileAndShortMessage(report, task.title, "document");
+        } else if (tc.name === "create_file") {
+          const {
+            title,
+            content,
+            fileType = "code",
+          } = tc.args as {
+            title: string;
+            content: string;
+            fileType?: "document" | "code";
+          };
+          await createFileAndShortMessage(content, title, fileType);
+          reports.push(
+            `[${employee.name}] 已提交${fileType === "code" ? "代码" : "文档"}《${title}》`
+          );
         } else if (tc.name === "ask_colleague") {
           const { question, colleague_role } = tc.args as {
             question: string;
@@ -458,6 +722,21 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
           });
         }
       }
+      if (reports.length > 0) {
+        taskOutput = reports.join("\n\n---\n\n");
+      }
+    }
+
+    if (!taskOutput && result.content) {
+      taskOutput = result.content;
+      await createFileAndShortMessage(result.content, task.title);
+    }
+
+    if (taskOutput) {
+      await prisma.task.update({
+        where: { id: task.id },
+        data: { output: taskOutput, status: "review" },
+      });
     }
   }
 
@@ -520,7 +799,7 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
           : "Unassigned";
         const emoji = statusEmoji[task.status] ?? "❓";
         lines.push(
-          `${emoji} **[${task.status.toUpperCase()}]** ${task.title} — assigned to ${who}`
+          `${emoji} **[${task.status.toUpperCase()}]** ${task.title} — assigned to ${who} (taskId: \`${task.id}\`)`
         );
         if (task.output) {
           // Truncate long outputs to keep context manageable
@@ -538,6 +817,9 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
     const completed = project.tasks.filter(
       (t) => t.status === "completed"
     ).length;
+    const inReview = project.tasks.filter(
+      (t) => t.status === "review"
+    ).length;
     const blocked = project.tasks.filter(
       (t) => t.status === "blocked"
     ).length;
@@ -547,8 +829,36 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
     if (total > 0) {
       lines.push("");
       lines.push(
-        `**Progress**: ${completed}/${total} completed, ${inProgress} in-progress, ${blocked} blocked`
+        `**Progress**: ${completed}/${total} completed, ${inReview} in review, ${inProgress} in-progress, ${blocked} blocked`
       );
+    }
+
+    // Recent messages (employee questions, CEO replies, etc.)
+    const recentMessages = await prisma.message.findMany({
+      where: { projectId },
+      orderBy: { createdAt: "desc" },
+      take: 15,
+      include: { sender: { include: { role: true } } },
+    });
+    recentMessages.reverse();
+    if (recentMessages.length > 0) {
+      lines.push("");
+      lines.push("## Recent Messages (questions, replies, updates)");
+      for (const msg of recentMessages) {
+        const label =
+          msg.senderType === "founder"
+            ? "Founder"
+            : msg.senderType === "system"
+              ? "System"
+              : msg.sender
+                ? `${msg.sender.name} (${msg.sender.role.title})`
+                : "Unknown";
+        const preview =
+          msg.content.length > 200
+            ? msg.content.slice(0, 200).trim() + "…"
+            : msg.content;
+        lines.push(`- [${label}]: ${preview}`);
+      }
     }
 
     return lines.join("\n");
@@ -578,7 +888,9 @@ ${snapshot}
 
 **Your responsibilities as the autonomous project manager:**
 
-1. **If no tasks exist yet**: This is the start. Analyze the project, then use \`assign_task\` to delegate work to your team. Start with the **project initiation / documentation phase** — assign each relevant team member a documentation task based on their expertise:
+- **Task completion is decided only by you.** When an employee submits a deliverable, the task goes to "review". It is NOT complete until you call \`approve_task\`. If the employee has asked questions or requested clarification (see Recent Messages), do NOT approve until you have answered — use \`send_message\` to reply to everyone, or \`request_info\` to ask another employee and then share the answer. Only when you are satisfied and any clarifications are resolved should you call \`approve_task\`.
+
+1. **If no tasks exist yet**: This is the start. Analyze the project, then use \`assign_task\` **for all relevant team members in one turn** so they work concurrently. Start with the **project initiation / documentation phase** — assign doc tasks to each relevant role in a single response:
    - **Product Manager**: Requirements analysis, feature scope, user stories, PRD
    - **UI Designer**: Design direction, key page layouts, interaction patterns
    - **Frontend Developer**: Frontend architecture, tech stack, component structure
@@ -586,19 +898,20 @@ ${snapshot}
    - **QA Engineer**: Testing strategy, quality criteria, acceptance criteria
    - **Researcher**: Market research, competitive analysis, technical feasibility study
    - **Ideation Specialist**: Creative product ideas, innovation angles, feature brainstorming based on research
-   Assign tasks only to team members that are relevant to this specific project.
+   Use multiple \`assign_task\` calls in one response — do NOT assign one task and wait; assign all parallel doc tasks at once so the team executes concurrently.
 
-2. **If documentation tasks are completed**: Review the outputs. If they look good, use \`save_project_document\` to compile all outputs into a comprehensive project document. Then move on to planning implementation tasks.
+2. **If there are tasks in "review" or employees have asked questions**: Check **Recent Messages** first. If anyone (e.g. backend engineer) has asked for clarification, answer via \`send_message\` or get an answer via \`request_info\` and then send a summary. Do not \`approve_task\` until clarifications are addressed. For tasks in review: if the deliverable is good, use \`approve_task\`; if not, use \`request_revision\` with concrete feedback. Only when all relevant deliverables are approved and questions answered, use \`save_project_document\` (for doc phase) or move on.
 
-3. **If the project document is saved but no implementation tasks exist**: Plan the **implementation phase**. Break the project into concrete implementation tasks and assign them to the appropriate engineers and designers.
+3. **If the project document is saved but no implementation tasks exist**: Plan the **implementation phase**. Break the project into concrete implementation tasks and assign **all tasks that can run in parallel** in one turn (e.g., frontend and backend tasks if independent) so multiple engineers work concurrently.
 
-4. **If implementation tasks are completed**: Review the results. If there are issues or follow-ups needed, assign review/fix tasks. If everything looks satisfactory, use \`update_project_status\` to mark the project as **"completed"** with a summary.
+4. **If implementation tasks are in review**: Same as above — handle any questions in Recent Messages, then for each task in review use \`approve_task\` or \`request_revision\`. When all are approved, use \`update_project_status\` to mark the project **"completed"** with a summary.
 
 5. **If some tasks are blocked or failed**: Decide how to recover — reassign the work, adjust the plan, or ask a team member for clarification.
 
 **Important rules:**
 - You MUST use tools to take action. Do not just describe what you would do — actually do it.
-- Assign tasks to team members using their \`roleName\` (the \`role:\` value shown in the team list).
+- Assign tasks using \`roleName\` (the \`role:\` in the team list). Only you decide when a task is done: use \`approve_task\` when satisfied, \`request_revision\` when not.
+- If employees have asked questions (in Recent Messages), answer or delegate answers before approving their tasks.
 - When all work is truly done and the project is ready, set the status to "completed". Do NOT leave the project hanging.
 - If this is your last cycle (${iteration + 1}/${maxIterations}), you MUST either complete the project or set status to "review".
 
@@ -679,6 +992,39 @@ function buildCeoTools(
       }),
     },
     {
+      name: "request_revision",
+      description:
+        "Send a task deliverable back to the assigned employee for revision. Use this when the output quality is insufficient, information is incomplete, or the deliverable does not meet requirements. The employee will receive your feedback and re-submit.",
+      parameters: z.object({
+        taskId: z
+          .string()
+          .describe(
+            "The task ID (shown in the task list as taskId: `xxx`) whose deliverable needs revision"
+          ),
+        feedback: z
+          .string()
+          .describe(
+            "Specific feedback for the employee: what is wrong, what to improve, what is missing. Be concrete so they can fix it."
+          ),
+      }),
+    },
+    {
+      name: "approve_task",
+      description:
+        "Mark a task as completed. Only the CEO can decide when a task is done. Use this when the deliverable has been reviewed and meets your requirements. Do NOT approve if the employee has asked for clarification and you have not yet answered, or if quality is not satisfactory (use request_revision instead).",
+      parameters: z.object({
+        taskId: z
+          .string()
+          .describe(
+            "The task ID (shown in the task list as taskId: `xxx`) to mark as completed"
+          ),
+        comment: z
+          .string()
+          .optional()
+          .describe("Optional brief note for the record (e.g. what was approved)"),
+      }),
+    },
+    {
       name: "request_info",
       description:
         "Ask a specific team member a question and get their response immediately, without creating a formal task.",
@@ -701,12 +1047,29 @@ function getAgentTools(): ToolDefinition[] {
     {
       name: "report_to_ceo",
       description:
-        "Report your progress or results to the CEO. Use this when you've completed a task or have important updates.",
+        "Report your progress or results to the CEO. Use this when you've completed a task or have important updates. For documentation, PRDs, design specs, research reports — use this.",
       parameters: z.object({
         report: z
           .string()
           .describe(
             "Your report to the CEO, including results, findings, or progress updates"
+          ),
+      }),
+    },
+    {
+      name: "create_file",
+      description:
+        "Create and submit a file deliverable. Use this for code (e.g., .tsx, .ts, .py) or other file outputs. For implementation tasks, submit your code via this tool with fileType 'code' so it appears in the Code tab.",
+      parameters: z.object({
+        title: z
+          .string()
+          .describe("Filename with extension, e.g. Button.tsx, api.py"),
+        content: z.string().describe("The file content (source code or text)"),
+        fileType: z
+          .enum(["document", "code"])
+          .default("code")
+          .describe(
+            "Use 'code' for source code (ts, tsx, py, etc.); use 'document' for markdown/docs"
           ),
       }),
     },

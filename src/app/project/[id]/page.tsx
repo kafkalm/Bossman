@@ -9,6 +9,13 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import {
   ArrowLeft,
@@ -19,11 +26,22 @@ import {
   CheckCircle2,
   Clock,
   Loader2,
+  Circle,
   Info,
   FileText,
+  FolderOpen,
+  ChevronRight,
+  ChevronDown,
+  ExternalLink,
+  GripVertical,
+  Coins,
+  Code2,
+  Expand,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { getEmployeeStatusColor, getProjectStatusColor } from "@/lib/constants";
+import { useTranslation } from "@/lib/i18n";
 
 interface Task {
   id: string;
@@ -46,6 +64,7 @@ interface Message {
   id: string;
   senderType: string;
   content: string;
+  metadata: string | null;
   createdAt: string;
   taskId: string | null;
   sender: {
@@ -53,6 +72,21 @@ interface Message {
     name: string;
     role: { title: string };
   } | null;
+}
+
+interface ProjectFile {
+  id: string;
+  title: string;
+  content: string;
+  brief: string | null;
+  fileType?: string;
+  createdAt: string;
+  employee: {
+    id: string;
+    name: string;
+    role: { title: string };
+  };
+  task: { id: string; title: string } | null;
 }
 
 interface Employee {
@@ -75,26 +109,17 @@ interface Project {
   };
   tasks: Task[];
   messages: Message[];
+  files: ProjectFile[];
+  tokenCount?: number;
 }
 
 const statusIcons: Record<string, React.ReactNode> = {
   pending: <Clock className="h-3.5 w-3.5 text-gray-400" />,
   assigned: <Clock className="h-3.5 w-3.5 text-yellow-500" />,
-  in_progress: <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin" />,
+  in_progress: <Circle className="h-3.5 w-3.5 text-blue-500" />,
   review: <AlertCircle className="h-3.5 w-3.5 text-purple-500" />,
   completed: <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />,
   blocked: <AlertCircle className="h-3.5 w-3.5 text-red-500" />,
-};
-
-const statusLabels: Record<string, string> = {
-  pending: "Pending",
-  assigned: "Assigned",
-  in_progress: "In Progress",
-  review: "Review",
-  completed: "Completed",
-  blocked: "Blocked",
-  planning: "Planning",
-  failed: "Failed",
 };
 
 const statusVariant: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
@@ -114,10 +139,26 @@ export default function ProjectDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const { t } = useTranslation();
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
+  const [activeTab, setActiveTab] = useState<string>("");
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+  const [selectedProjectDoc, setSelectedProjectDoc] = useState(false);
+  const [selectedCodeFileId, setSelectedCodeFileId] = useState<string | null>(
+    null
+  );
+  const [expandedCodeEmployeeIds, setExpandedCodeEmployeeIds] = useState<
+    Set<string>
+  >(() => new Set());
+  const [expandedEmployeeIds, setExpandedEmployeeIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [docTreeWidth, setDocTreeWidth] = useState(224);
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeStartRef = useRef<{ x: number; w: number } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -135,16 +176,80 @@ export default function ProjectDetailPage({
 
   useEffect(() => {
     fetchProject();
-    // Poll for updates every 3 seconds
-    pollIntervalRef.current = setInterval(fetchProject, 3000);
+    // SSE for real-time file/doc updates
+    const es = new EventSource(`/api/projects/${id}/events`);
+    es.addEventListener("refresh", () => fetchProject());
+    // Poll fallback every 5s
+    pollIntervalRef.current = setInterval(fetchProject, 5000);
     return () => {
+      es.close();
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
-  }, [fetchProject]);
+  }, [fetchProject, id]);
+
+  // Resize document tree
+  useEffect(() => {
+    if (!isResizing) return;
+    const onMove = (e: MouseEvent) => {
+      const start = resizeStartRef.current;
+      if (!start) return;
+      const delta = e.clientX - start.x;
+      const next = Math.max(180, Math.min(480, start.w + delta));
+      setDocTreeWidth(next);
+    };
+    const onUp = () => {
+      setIsResizing(false);
+      resizeStartRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [isResizing]);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizeStartRef.current = { x: e.clientX, w: docTreeWidth };
+    setIsResizing(true);
+  }, [docTreeWidth]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [project?.messages?.length]);
+
+  useEffect(() => {
+    if (selectedFileId && activeTab === "document") {
+      const file = project?.files?.find((f) => f.id === selectedFileId);
+      if (file) {
+        setExpandedEmployeeIds((prev) =>
+          new Set(prev).add(file.employee.id)
+        );
+      }
+      const el = document.getElementById(selectedFileId);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [selectedFileId, activeTab, project?.files]);
+
+  useEffect(() => {
+    if (selectedCodeFileId && activeTab === "code") {
+      const file = project?.files?.find((f) => f.id === selectedCodeFileId);
+      if (file) {
+        setExpandedCodeEmployeeIds((prev) =>
+          new Set(prev).add(file.employee.id)
+        );
+      }
+      const el = document.getElementById(selectedCodeFileId);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [selectedCodeFileId, activeTab, project?.files]);
 
   const handleSendMessage = async () => {
     if (!message.trim() || sending) return;
@@ -182,7 +287,7 @@ export default function ProjectDetailPage({
     );
   }
 
-  const allTasks = flattenTasks(project.tasks);
+  const allTasks = flattenTasks(project.tasks ?? []);
   const completedTasks = allTasks.filter((t) => t.status === "completed");
   const progressPercent =
     allTasks.length > 0
@@ -203,6 +308,53 @@ export default function ProjectDetailPage({
   }
 
   const hasDocument = !!project.document;
+  const projectFiles = project.files ?? [];
+  const docFiles = projectFiles.filter(
+    (f) => (f.fileType ?? "document") === "document"
+  );
+  const codeFiles = projectFiles.filter((f) => f.fileType === "code");
+  const hasFiles = projectFiles.length > 0;
+  const hasDocFiles = hasDocument || docFiles.length > 0;
+  const hasCodeFiles = codeFiles.length > 0;
+  const defaultTab =
+    activeTab ||
+    (hasDocFiles ? "document" : hasCodeFiles ? "code" : "chat");
+
+  const handleViewFile = (fileId: string) => {
+    const file = projectFiles.find((f) => f.id === fileId);
+    if (file?.fileType === "code") {
+      setActiveTab("code");
+      setSelectedCodeFileId(fileId);
+      setExpandedCodeEmployeeIds((prev) =>
+        new Set(prev).add(file.employee.id)
+      );
+    } else if (file) {
+      setActiveTab("document");
+      setSelectedProjectDoc(false);
+      setSelectedFileId(fileId);
+      setExpandedEmployeeIds((prev) =>
+        new Set(prev).add(file.employee.id)
+      );
+    }
+  };
+
+  const toggleCodeEmployeeFolder = (employeeId: string) => {
+    setExpandedCodeEmployeeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(employeeId)) next.delete(employeeId);
+      else next.add(employeeId);
+      return next;
+    });
+  };
+
+  const toggleEmployeeFolder = (employeeId: string) => {
+    setExpandedEmployeeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(employeeId)) next.delete(employeeId);
+      else next.add(employeeId);
+      return next;
+    });
+  };
 
   return (
     <div className="flex flex-col h-screen">
@@ -211,8 +363,8 @@ export default function ProjectDetailPage({
         description={project.description || undefined}
         actions={
           <div className="flex items-center gap-2">
-            <Badge variant={statusVariant[project.status] ?? "secondary"}>
-              {statusLabels[project.status] ?? project.status}
+            <Badge variant="outline" className={getProjectStatusColor(project.status)}>
+              {t(`taskStatus.${project.status}`)}
             </Badge>
             <Link href="/project">
               <Button variant="ghost" size="sm">
@@ -224,74 +376,400 @@ export default function ProjectDetailPage({
         }
       />
 
-      {/* Progress bar */}
-      {allTasks.length > 0 && (
-        <div className="px-6 pt-4 pb-2">
-          <div className="flex items-center justify-between text-sm text-muted-foreground mb-1">
-            <span>
-              Progress: {completedTasks.length} / {allTasks.length} tasks
+      {/* Progress bar and token count */}
+      <div className="px-6 pt-4 pb-2">
+        <div className="flex items-center justify-between text-sm text-muted-foreground mb-1">
+          <span className="flex items-center gap-3">
+            {allTasks.length > 0 && (
+              <span>
+                {t("project.progress")}: {completedTasks.length} / {allTasks.length} tasks
+              </span>
+            )}
+            <span className="flex items-center gap-1">
+              <Coins className="h-3.5 w-3.5" />
+              {(project.tokenCount ?? 0).toLocaleString()} {t("project.tokens")}
             </span>
-            <span>{progressPercent}%</span>
-          </div>
-          <Progress value={progressPercent} className="h-2" />
+          </span>
+          {allTasks.length > 0 && <span>{progressPercent}%</span>}
         </div>
-      )}
+        {allTasks.length > 0 && <Progress value={progressPercent} className="h-2" />}
+      </div>
 
       <div className="flex-1 overflow-hidden">
-        <Tabs defaultValue={hasDocument ? "document" : "chat"} className="flex flex-col h-full">
+        <Tabs
+          value={defaultTab}
+          onValueChange={(v) => setActiveTab(v)}
+          className="flex flex-col h-full"
+        >
           <div className="border-b px-6">
             <TabsList className="h-10">
               <TabsTrigger value="document" className="gap-1.5">
                 <FileText className="h-3.5 w-3.5" />
-                Document
+                {t("project.documentTab")}
                 {!hasDocument && allTasks.length > 0 && (
                   <Loader2 className="h-3 w-3 animate-spin ml-1" />
                 )}
               </TabsTrigger>
+              <TabsTrigger value="code" className="gap-1.5">
+                <Code2 className="h-3.5 w-3.5" />
+                {t("project.codeTab")}
+                {hasCodeFiles && (
+                  <span className="text-xs text-muted-foreground">
+                    ({codeFiles.length})
+                  </span>
+                )}
+              </TabsTrigger>
               <TabsTrigger value="chat">
-                Chat ({project.messages.length})
+                {t("project.chat")} ({(project.messages ?? []).length})
               </TabsTrigger>
               <TabsTrigger value="kanban">
-                Kanban ({allTasks.length})
+                {t("project.kanban")} ({allTasks.length})
               </TabsTrigger>
               <TabsTrigger value="tasks">
-                Task List
+                {t("project.taskList")}
               </TabsTrigger>
-              <TabsTrigger value="team">Team</TabsTrigger>
+              <TabsTrigger value="team">{t("project.team")}</TabsTrigger>
             </TabsList>
           </div>
 
-          {/* Document Tab */}
+          {/* Document Tab: left = directory tree, right = preview */}
           <TabsContent
             value="document"
-            className="flex-1 m-0 overflow-auto"
+            className="flex-1 m-0 flex flex-col min-h-0"
           >
-            {hasDocument ? (
-              <div className="max-w-4xl mx-auto p-6">
-                <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-6 prose-headings:mb-3 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-pre:my-3 prose-blockquote:my-3 prose-table:my-3 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em] prose-pre:bg-muted prose-pre:rounded-lg prose-pre:p-4 prose-a:text-primary prose-img:rounded-lg prose-table:text-sm prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:bg-muted/50 prose-hr:my-6">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {project.document!}
-                  </ReactMarkdown>
+            <div className="flex flex-1 min-h-0">
+              {/* Left: document tree */}
+              <aside
+                className="shrink-0 border-r bg-muted/30 flex flex-col"
+                style={{ width: docTreeWidth }}
+              >
+                <div className="px-3 py-2 border-b text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  {t("project.directoryTitle")}
                 </div>
+                <ScrollArea className="flex-1 py-2">
+                  <div className="px-1 space-y-0.5">
+                    {/* Top-level: compiled project document */}
+                    {hasDocument && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedProjectDoc(true);
+                          setSelectedFileId(null);
+                        }}
+                        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-sm transition-colors ${
+                          selectedProjectDoc
+                            ? "bg-primary text-primary-foreground"
+                            : "hover:bg-muted"
+                        }`}
+                      >
+                        <FileText className="h-4 w-4 shrink-0" />
+                        <span className="truncate">project_doc.md</span>
+                      </button>
+                    )}
+
+                    {/* Employee folders */}
+                    {docFiles.length > 0 &&
+                      (() => {
+                        const byEmployee = docFiles.reduce<
+                          Record<string, ProjectFile[]>
+                        >((acc, f) => {
+                          const key = f.employee.id;
+                          if (!acc[key]) acc[key] = [];
+                          acc[key].push(f);
+                          return acc;
+                        }, {});
+                        return Object.entries(byEmployee).map(
+                          ([empId, files]) => {
+                            const emp = files[0]?.employee;
+                            if (!emp) return null;
+                            const isExpanded = expandedEmployeeIds.has(empId);
+                            return (
+                              <div key={empId} className="space-y-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    toggleEmployeeFolder(empId)
+                                  }
+                                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-left text-sm hover:bg-muted transition-colors"
+                                >
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                  ) : (
+                                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                  )}
+                                  <FolderOpen className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-500" />
+                                  <span className="truncate font-medium">
+                                    {emp.name} ({emp.role.title})
+                                  </span>
+                                </button>
+                                {isExpanded && (
+                                  <div className="ml-5 pl-2 border-l border-muted space-y-0.5">
+                                    {files.map((file) => (
+                                      <button
+                                        key={file.id}
+                                        type="button"
+                                        id={file.id}
+                                        onClick={() => {
+                                          setSelectedProjectDoc(false);
+                                          setSelectedFileId(file.id);
+                                        }}
+                                        className={`w-full flex items-center gap-2 py-1 px-2 rounded text-left text-sm transition-colors ${
+                                          selectedFileId === file.id
+                                            ? "bg-primary text-primary-foreground"
+                                            : "hover:bg-muted"
+                                        }`}
+                                      >
+                                        <FileText className="h-3.5 w-3.5 shrink-0 opacity-80" />
+                                        <span className="truncate">
+                                          {file.title.endsWith(".md")
+                                            ? file.title
+                                            : `${file.title}.md`}
+                                        </span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+                        );
+                      })()}
+                  </div>
+                </ScrollArea>
+              </aside>
+
+              {/* Resizer */}
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                onMouseDown={handleResizeStart}
+                className={`shrink-0 w-1 cursor-col-resize border-r bg-border hover:bg-primary/30 transition-colors flex items-center justify-center group ${
+                  isResizing ? "bg-primary/50" : ""
+                }`}
+              >
+                <GripVertical className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 group-active:opacity-100" />
               </div>
-            ) : allTasks.length > 0 ? (
-              <div className="flex flex-col items-center justify-center py-20 text-center">
-                <Loader2 className="h-10 w-10 animate-spin text-primary mb-4" />
-                <h3 className="text-lg font-medium">正在编制项目文档...</h3>
-                <p className="text-sm text-muted-foreground mt-2 max-w-md">
-                  CEO 正在协调团队成员完成各自的文档部分，完成后将自动汇编成完整的项目文档。
-                  你可以在 Chat 标签页查看实时进展。
-                </p>
+
+              {/* Right: document preview */}
+              <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+                {selectedProjectDoc && hasDocument ? (
+                  <ScrollArea className="flex-1">
+                    <div className="p-6 max-w-3xl">
+                      <h1 className="text-xl font-semibold mb-4">
+                        {t("project.projectDoc")}
+                      </h1>
+                      <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-6 prose-headings:mb-3 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-pre:my-3 prose-blockquote:my-3 prose-table:my-3 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em] prose-pre:bg-muted prose-pre:rounded-lg prose-pre:p-4 prose-a:text-primary prose-img:rounded-lg prose-table:text-sm prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:bg-muted/50 prose-hr:my-6">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {project.document!}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
+                  </ScrollArea>
+                ) : selectedFileId ? (
+                  (() => {
+                    const file = docFiles.find(
+                      (f) => f.id === selectedFileId
+                    );
+                    if (!file) return null;
+                    return (
+                      <ScrollArea className="flex-1">
+                        <div className="p-6 max-w-3xl">
+                          <div className="flex items-center gap-2 mb-4">
+                            <span className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm text-primary">
+                              {file.employee.name[0]}
+                            </span>
+                            <div>
+                              <h1 className="text-xl font-semibold">
+                                {file.title}
+                              </h1>
+                              <p className="text-sm text-muted-foreground">
+                                {file.employee.name} · {file.employee.role.title}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-6 prose-headings:mb-3 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-pre:my-3 prose-blockquote:my-3 prose-table:my-3 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-pre:bg-muted prose-pre:rounded-lg prose-pre:p-4 prose-a:text-primary prose-img:rounded-lg prose-table:text-sm prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:bg-muted/50 prose-hr:my-6">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {file.content}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                      </ScrollArea>
+                    );
+                  })()
+                ) : !hasDocument && docFiles.length === 0 ? (
+                  <div className="flex-1 flex flex-col items-center justify-center py-20 text-center px-6">
+                    {allTasks.length > 0 ? (
+                      <>
+                        <Loader2 className="h-10 w-10 animate-spin text-primary mb-4" />
+                        <h3 className="text-lg font-medium">
+                          {t("project.compiling")}
+                        </h3>
+                        <p className="text-sm text-muted-foreground mt-2 max-w-md">
+                          {t("project.compilingHint")}
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="h-12 w-12 text-muted-foreground/50 mb-4" />
+                        <h3 className="text-lg font-medium">
+                          {t("project.projectStarting")}
+                        </h3>
+                        <p className="text-sm text-muted-foreground mt-2 max-w-md">
+                          {t("project.projectStartingHint")}
+                        </p>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center py-20 text-center text-muted-foreground px-6">
+                    <FileText className="h-12 w-12 opacity-50 mb-4" />
+                    <p className="text-sm">{t("project.selectDoc")}</p>
+                  </div>
+                )}
+              </main>
+            </div>
+          </TabsContent>
+
+          {/* Code Tab: same layout as Document — left tree, right preview */}
+          <TabsContent
+            value="code"
+            className="flex-1 m-0 flex flex-col min-h-0"
+          >
+            <div className="flex flex-1 min-h-0">
+              {/* Left: code tree */}
+              <aside
+                className="shrink-0 border-r bg-muted/30 flex flex-col"
+                style={{ width: docTreeWidth }}
+              >
+                <div className="px-3 py-2 border-b text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  {t("project.codeDirectoryTitle")}
+                </div>
+                <ScrollArea className="flex-1 py-2">
+                  <div className="px-1 space-y-0.5">
+                    {codeFiles.length > 0 ? (
+                      (() => {
+                        const byEmployee = codeFiles.reduce<
+                          Record<string, ProjectFile[]>
+                        >((acc, f) => {
+                          const key = f.employee.id;
+                          if (!acc[key]) acc[key] = [];
+                          acc[key].push(f);
+                          return acc;
+                        }, {});
+                        return Object.entries(byEmployee).map(
+                          ([empId, files]) => {
+                            const emp = files[0]?.employee;
+                            if (!emp) return null;
+                            const isExpanded =
+                              expandedCodeEmployeeIds.has(empId);
+                            return (
+                              <div key={empId} className="space-y-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    toggleCodeEmployeeFolder(empId)
+                                  }
+                                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-left text-sm hover:bg-muted transition-colors"
+                                >
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                  ) : (
+                                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                  )}
+                                  <Code2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-500" />
+                                  <span className="truncate font-medium">
+                                    {emp.name} ({emp.role.title})
+                                  </span>
+                                </button>
+                                {isExpanded && (
+                                  <div className="ml-5 pl-2 border-l border-muted space-y-0.5">
+                                    {files.map((file) => (
+                                      <button
+                                        key={file.id}
+                                        type="button"
+                                        id={file.id}
+                                        onClick={() => {
+                                          setSelectedCodeFileId(file.id);
+                                        }}
+                                        className={`w-full flex items-center gap-2 py-1 px-2 rounded text-left text-sm transition-colors ${
+                                          selectedCodeFileId === file.id
+                                            ? "bg-primary text-primary-foreground"
+                                            : "hover:bg-muted"
+                                        }`}
+                                      >
+                                        <Code2 className="h-3.5 w-3.5 shrink-0 opacity-80" />
+                                        <span className="truncate">
+                                          {file.title}
+                                        </span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+                        );
+                      })()
+                    ) : (
+                      <div className="px-3 py-6 text-sm text-muted-foreground text-center">
+                        {t("project.noCodeFiles")}
+                      </div>
+                    )}
+                  </div>
+                </ScrollArea>
+              </aside>
+
+              {/* Resizer */}
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                onMouseDown={handleResizeStart}
+                className={`shrink-0 w-1 cursor-col-resize border-r bg-border hover:bg-primary/30 transition-colors flex items-center justify-center group ${
+                  isResizing ? "bg-primary/50" : ""
+                }`}
+              >
+                <GripVertical className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 group-active:opacity-100" />
               </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center py-20 text-center">
-                <FileText className="h-12 w-12 text-muted-foreground/50 mb-4" />
-                <h3 className="text-lg font-medium">项目正在启动中...</h3>
-                <p className="text-sm text-muted-foreground mt-2 max-w-md">
-                  CEO 正在分析项目需求，稍后将协调团队开始编制项目文档。
-                </p>
-              </div>
-            )}
+
+              {/* Right: code preview */}
+              <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+                {selectedCodeFileId ? (
+                  (() => {
+                    const file = codeFiles.find(
+                      (f) => f.id === selectedCodeFileId
+                    );
+                    if (!file) return null;
+                    return (
+                      <ScrollArea className="flex-1">
+                        <div className="p-6">
+                          <div className="flex items-center gap-2 mb-4">
+                            <span className="h-8 w-8 rounded-full bg-emerald-500/10 flex items-center justify-center text-sm text-emerald-600 dark:text-emerald-400">
+                              {file.employee.name[0]}
+                            </span>
+                            <div>
+                              <h1 className="text-xl font-semibold">
+                                {file.title}
+                              </h1>
+                              <p className="text-sm text-muted-foreground">
+                                {file.employee.name} · {file.employee.role.title}
+                              </p>
+                            </div>
+                          </div>
+                          <pre className="bg-muted rounded-lg p-4 text-sm overflow-x-auto font-mono leading-relaxed whitespace-pre-wrap break-words">
+                            <code>{file.content}</code>
+                          </pre>
+                        </div>
+                      </ScrollArea>
+                    );
+                  })()
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center py-20 text-center text-muted-foreground px-6">
+                    <Code2 className="h-12 w-12 opacity-50 mb-4" />
+                    <p className="text-sm">{t("project.selectCodeFile")}</p>
+                  </div>
+                )}
+              </main>
+            </div>
           </TabsContent>
 
           {/* Chat Tab */}
@@ -314,7 +792,7 @@ export default function ProjectDetailPage({
                   </div>
                 )}
 
-                {project.messages.length === 0 && (
+                {(project.messages ?? []).length === 0 && (
                   <div className="text-center py-8 text-muted-foreground">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
                     <p>CEO 正在启动项目立项流程...</p>
@@ -322,8 +800,12 @@ export default function ProjectDetailPage({
                 )}
 
                 {/* Messages */}
-                {project.messages.map((msg) => (
-                  <MessageBubble key={msg.id} message={msg} />
+                {(project.messages ?? []).map((msg) => (
+                  <MessageBubble
+                    key={msg.id}
+                    message={msg}
+                    onViewFile={handleViewFile}
+                  />
                 ))}
                 <div ref={messagesEndRef} />
               </div>
@@ -335,7 +817,7 @@ export default function ProjectDetailPage({
                 <Input
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  placeholder="Message the CEO..."
+                  placeholder={t("project.messageCEO")}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
@@ -362,7 +844,7 @@ export default function ProjectDetailPage({
             {allTasks.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
                 <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
-                <p>等待 CEO 分配任务...</p>
+                <p>{t("project.waitingForTasks")}</p>
               </div>
             ) : (
               <div className="flex gap-4 min-h-full overflow-x-auto pb-4">
@@ -374,7 +856,7 @@ export default function ProjectDetailPage({
                     <div className="flex items-center gap-2 mb-3">
                       {statusIcons[status]}
                       <h3 className="font-medium text-sm">
-                        {statusLabels[status] ?? status}
+                        {t(`taskStatus.${status}`)}
                       </h3>
                       <Badge variant="secondary" className="text-xs ml-auto">
                         {tasks.length}
@@ -386,7 +868,7 @@ export default function ProjectDetailPage({
                       ))}
                       {tasks.length === 0 && (
                         <div className="p-4 text-center text-xs text-muted-foreground border border-dashed rounded-lg">
-                          No tasks
+                          {t("project.noTasks")}
                         </div>
                       )}
                     </div>
@@ -399,14 +881,14 @@ export default function ProjectDetailPage({
           {/* Tasks List Tab */}
           <TabsContent value="tasks" className="flex-1 m-0 overflow-auto p-6">
             <div className="max-w-4xl mx-auto">
-              {project.tasks.length === 0 ? (
+              {(project.tasks ?? []).length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
-                  <p>等待 CEO 分配任务...</p>
+                  <p>{t("project.waitingForTasks")}</p>
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {project.tasks.map((task) => (
+                  {(project.tasks ?? []).map((task) => (
                     <TaskCard key={task.id} task={task} />
                   ))}
                 </div>
@@ -431,16 +913,10 @@ export default function ProjectDetailPage({
                     </div>
                     <div className="flex items-center gap-1.5">
                       <div
-                        className={`h-2 w-2 rounded-full ${
-                          emp.status === "busy"
-                            ? "bg-green-500"
-                            : emp.status === "offline"
-                              ? "bg-red-400"
-                              : "bg-gray-400"
-                        }`}
+                        className={`h-2 w-2 rounded-full ${getEmployeeStatusColor(emp.status)}`}
                       />
-                      <span className="text-xs text-muted-foreground capitalize">
-                        {emp.status}
+                      <span className="text-xs text-muted-foreground">
+                        {t(`team.${emp.status}`)}
                       </span>
                     </div>
                   </CardContent>
@@ -454,15 +930,68 @@ export default function ProjectDetailPage({
   );
 }
 
-function MessageBubble({ message }: { message: Message }) {
+function MessageBubble({
+  message,
+  onViewFile,
+}: {
+  message: Message;
+  onViewFile?: (fileId: string) => void;
+}) {
+  const { t } = useTranslation();
   const isFounder = message.senderType === "founder";
   const isSystem = message.senderType === "system";
+  let meta: { fileId?: string; brief?: string; fileType?: string } | undefined;
+  try {
+    meta = message.metadata
+      ? (JSON.parse(message.metadata) as {
+          fileId?: string;
+          brief?: string;
+          fileType?: string;
+        })
+      : undefined;
+  } catch {
+    meta = undefined;
+  }
+  const hasFileRef = !!meta?.fileId;
+  const isCodeFile = meta?.fileType === "code";
 
   if (isSystem) {
+    const TRUNCATE_LEN = 120;
+    const isLong = message.content.length > TRUNCATE_LEN;
+    const truncated = isLong
+      ? message.content.slice(0, TRUNCATE_LEN).trim() + "…"
+      : message.content;
+
     return (
       <div className="flex justify-center">
-        <div className="text-xs text-muted-foreground bg-muted px-3 py-1.5 rounded-full max-w-[80%] text-center">
-          {message.content}
+        <div className="text-xs text-muted-foreground bg-muted px-3 py-1.5 rounded-lg max-w-[80%] text-center">
+          {isLong ? (
+            <Dialog>
+              <div className="text-left flex items-center gap-2 min-w-0">
+                <span className="truncate">{truncated}</span>
+                <DialogTrigger asChild>
+                  <button
+                    type="button"
+                    className="shrink-0 inline-flex items-center gap-1 text-primary hover:underline"
+                  >
+                    {t("project.viewMore")}
+                  </button>
+                </DialogTrigger>
+              </div>
+              <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>{t("project.systemMessage")}</DialogTitle>
+                </DialogHeader>
+                <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-ol:my-2 prose-pre:my-3 prose-code:bg-muted prose-pre:bg-muted prose-pre:rounded-lg prose-pre:p-4">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {message.content}
+                  </ReactMarkdown>
+                </div>
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="whitespace-pre-wrap text-left">{message.content}</p>
+          )}
         </div>
       </div>
     );
@@ -471,11 +1000,12 @@ function MessageBubble({ message }: { message: Message }) {
   return (
     <div
       className={`flex gap-3 ${isFounder ? "flex-row-reverse" : "flex-row"}`}
+      id={meta?.fileId ? `msg-${meta.fileId}` : undefined}
     >
       <div
         className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-medium ${
           isFounder
-            ? "bg-primary text-primary-foreground"
+            ? "bg-sky-600 text-white"
             : "bg-secondary text-secondary-foreground"
         }`}
       >
@@ -487,27 +1017,87 @@ function MessageBubble({ message }: { message: Message }) {
           <Bot className="h-4 w-4" />
         )}
       </div>
-      <div
-        className={`rounded-lg px-4 py-2.5 max-w-[80%] ${
-          isFounder ? "bg-primary text-primary-foreground" : "bg-muted"
-        }`}
-      >
-        {!isFounder && message.sender && (
-          <div
-            className={`text-xs font-medium mb-1 ${isFounder ? "opacity-70" : "text-primary"}`}
-          >
-            {message.sender.name} &middot; {message.sender.role.title}
+      <div className={`flex flex-col gap-1 max-w-[80%] ${isFounder ? "items-end" : "items-start"}`}>
+        {(isFounder || message.sender) && (
+          <div className="text-xs font-medium text-muted-foreground">
+            {isFounder ? t("common.me") : `${message.sender!.name} · ${message.sender!.role.title}`}
           </div>
         )}
-        <div className="text-sm break-words prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:before:content-none prose-code:after:content-none prose-code:bg-background/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em] prose-pre:bg-background/50 prose-pre:rounded-md prose-pre:p-3 prose-a:text-primary">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {message.content}
-          </ReactMarkdown>
-        </div>
         <div
-          className={`text-xs mt-1 ${isFounder ? "opacity-50" : "text-muted-foreground"}`}
+          className={`rounded-lg px-4 py-2.5 w-full ${
+            isFounder ? "bg-sky-600 text-white" : "bg-muted"
+          }`}
+        >
+        {hasFileRef ? (
+          <div className="text-sm">
+            <p className={isFounder ? "text-white/90 line-clamp-2" : "text-muted-foreground line-clamp-2"}>
+              {meta.brief ?? message.content}
+            </p>
+            {onViewFile && (
+              <button
+                type="button"
+                onClick={() => onViewFile(meta.fileId!)}
+                className={`mt-2 inline-flex items-center gap-1 text-xs hover:underline ${isFounder ? "text-white/90 hover:text-white" : "text-primary"}`}
+              >
+                <ExternalLink className="h-3 w-3" />
+                {isCodeFile ? t("project.viewCode") : t("project.viewDoc")}
+              </button>
+            )}
+          </div>
+        ) : (() => {
+          const LONG_MSG = 250;
+          const isLongDoc = message.content.length > LONG_MSG;
+          if (isLongDoc) {
+            return (
+              <div className="text-sm">
+                <p className="text-muted-foreground line-clamp-2">
+                  {message.content.slice(0, LONG_MSG).trim()}…
+                </p>
+                <Dialog>
+                  <DialogTrigger asChild>
+                    <button
+                      type="button"
+                      className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                    >
+                      <Expand className="h-3 w-3" />
+                      {t("project.viewMore")}
+                    </button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+                    <DialogHeader>
+                      <DialogTitle>
+                        {message.sender?.name} · {message.sender?.role.title}
+                      </DialogTitle>
+                    </DialogHeader>
+                    <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-ol:my-2 prose-pre:my-3 prose-code:bg-muted prose-pre:bg-muted prose-pre:rounded-lg prose-pre:p-4">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {message.content}
+                      </ReactMarkdown>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            );
+          }
+          return (
+            <div
+              className={`text-sm break-words prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:before:content-none prose-code:after:content-none prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em] prose-pre:rounded-md prose-pre:p-3 ${
+                isFounder
+                  ? "prose-invert prose-p:text-white prose-headings:text-white prose-li:text-white prose-strong:text-white prose-code:bg-white/20 prose-code:text-white prose-pre:bg-white/20 prose-pre:text-white prose-a:text-sky-100"
+                  : "dark:prose-invert prose-code:bg-muted prose-pre:bg-muted prose-a:text-primary"
+              }`}
+            >
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {message.content}
+              </ReactMarkdown>
+            </div>
+          );
+        })()}
+        <div
+          className={`text-xs mt-1 ${isFounder ? "text-white/80" : "text-muted-foreground"}`}
         >
           {new Date(message.createdAt).toLocaleTimeString()}
+        </div>
         </div>
       </div>
     </div>
@@ -545,6 +1135,7 @@ function KanbanCard({ task }: { task: Task }) {
 }
 
 function TaskCard({ task }: { task: Task }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -565,7 +1156,7 @@ function TaskCard({ task }: { task: Task }) {
             {task.assignments.length > 0 && (
               <div className="flex items-center gap-1 mt-2">
                 <span className="text-xs text-muted-foreground">
-                  Assigned to:
+                  {t("project.assignedTo")}:
                 </span>
                 {task.assignments.map((a) => (
                   <Badge
@@ -583,7 +1174,7 @@ function TaskCard({ task }: { task: Task }) {
             variant={statusVariant[task.status] ?? "secondary"}
             className="text-xs shrink-0"
           >
-            {statusLabels[task.status] ?? task.status}
+            {t(`taskStatus.${task.status}`)}
           </Badge>
         </div>
 
@@ -593,7 +1184,7 @@ function TaskCard({ task }: { task: Task }) {
               onClick={() => setExpanded(!expanded)}
               className="text-xs text-primary hover:underline cursor-pointer"
             >
-              {expanded ? "Hide Output" : "View Output"}
+              {expanded ? t("project.hideOutput") : t("project.viewOutput")}
             </button>
             {expanded && (
               <div className="mt-2 text-sm bg-muted p-3 rounded-md overflow-auto max-h-80">

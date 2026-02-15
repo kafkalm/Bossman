@@ -41,56 +41,76 @@ model AgentRole {
 // ─── Employee (Agent instance in a company) ──────────────────────────────────
 
 model Employee {
-  id             String           @id @default(cuid())
-  companyId      String
-  roleId         String
-  name           String
-  status         String           @default("idle") // idle, busy, offline
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  company        Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  role           AgentRole        @relation(fields: [roleId], references: [id])
-  assignments    TaskAssignment[]
-  messages       Message[]        @relation("SenderMessages")
-  tokenUsages    TokenUsage[]
-  directMessages DirectMessage[]
+  id              String        @id @default(cuid())
+  companyId       String
+  roleId          String
+  name            String
+  status          String        @default("idle") // idle, busy, offline
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  company         Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role            AgentRole     @relation(fields: [roleId], references: [id])
+  assignments     TaskAssignment[]
+  messages        Message[]     @relation("SenderMessages")
+  projectFiles    ProjectFile[]
+  tokenUsages     TokenUsage[]
+  directMessages  DirectMessage[]
 }
 
 // ─── Project ─────────────────────────────────────────────────────────────────
 
 model Project {
-  id          String       @id @default(cuid())
+  id          String        @id @default(cuid())
   companyId   String
   name        String
-  description String       @default("")
-  document    String?      // Markdown: project document produced by the team during project initiation
-  status      String       @default("planning") // planning, in_progress, review, completed, failed
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  description String        @default("")
+  document    String?       // Markdown: compiled project document
+  status      String        @default("planning") // planning, in_progress, review, completed, failed
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  company     Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   tasks       Task[]
   messages    Message[]
+  files       ProjectFile[]
   tokenUsages TokenUsage[]
+}
+
+// ─── Project File (employee deliverable) ────────────────────────────────────
+
+model ProjectFile {
+  id         String   @id @default(cuid())
+  projectId  String
+  employeeId String
+  taskId     String?  // optional: which task this came from
+  title      String   // e.g. "需求文档", "PRD", "Button.tsx"
+  content    String   // markdown or source code
+  brief      String?  // short summary for chat preview
+  fileType   String   @default("document") // "document" | "code"
+  createdAt  DateTime @default(now())
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  task       Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
 }
 
 // ─── Task ────────────────────────────────────────────────────────────────────
 
 model Task {
-  id          String           @id @default(cuid())
+  id          String         @id @default(cuid())
   projectId   String
   parentId    String? // for sub-tasks
   title       String
   description String
-  status      String           @default("pending") // pending, assigned, in_progress, review, completed, blocked
-  priority    Int              @default(0) // higher = more important
-  output      String? // agent's deliverable / result
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
-  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  parent      Task?            @relation("SubTasks", fields: [parentId], references: [id])
-  subTasks    Task[]           @relation("SubTasks")
+  status      String         @default("pending") // pending, assigned, in_progress, review, completed, blocked
+  priority    Int            @default(0) // higher = more important
+  output      String?        // agent's deliverable / result
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  project     Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent      Task?          @relation("SubTasks", fields: [parentId], references: [id])
+  subTasks    Task[]         @relation("SubTasks")
   assignments TaskAssignment[]
   messages    Message[]
+  files       ProjectFile[]
 }
 
 // ─── Task Assignment ─────────────────────────────────────────────────────────

@@ -19,6 +19,8 @@ import {
 import { Input } from "@/components/ui/input";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { getEmployeeStatusColor } from "@/lib/constants";
+import { useTranslation } from "@/lib/i18n";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,20 +52,6 @@ interface TeamMember {
   role: { id: string; name: string; title: string; isBuiltin: boolean };
 }
 
-// ─── Status helpers ───────────────────────────────────────────────────────────
-
-const statusColors: Record<string, string> = {
-  idle: "bg-green-500",
-  busy: "bg-yellow-500",
-  offline: "bg-gray-400",
-};
-
-const statusLabels: Record<string, string> = {
-  idle: "空闲",
-  busy: "忙碌中",
-  offline: "离线",
-};
-
 // ─── Contact Sidebar ──────────────────────────────────────────────────────────
 
 function ContactSidebar({
@@ -75,6 +63,7 @@ function ContactSidebar({
   activeId: string;
   onSelect: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const [search, setSearch] = useState("");
 
   const filtered = members.filter(
@@ -87,7 +76,7 @@ function ContactSidebar({
     <div className="flex h-full w-72 shrink-0 flex-col border-r bg-card overflow-hidden">
       {/* Sidebar Header */}
       <div className="flex items-center gap-2 border-b px-4 py-3">
-        <h2 className="text-sm font-semibold flex-1">对话</h2>
+        <h2 className="text-sm font-semibold flex-1">{t("team.chat")}</h2>
         <Badge variant="secondary" className="text-xs">
           {members.length}
         </Badge>
@@ -100,7 +89,7 @@ function ContactSidebar({
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索..."
+            placeholder={t("common.search")}
             className="h-8 pl-8 text-sm"
           />
         </div>
@@ -133,7 +122,7 @@ function ContactSidebar({
                     {member.name[0]}
                   </div>
                   <div
-                    className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-card ${statusColors[member.status] ?? "bg-gray-400"}`}
+                    className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-card ${getEmployeeStatusColor(member.status)}`}
                   />
                 </div>
 
@@ -144,7 +133,7 @@ function ContactSidebar({
                       {member.name}
                     </span>
                     <span className="text-[10px] text-muted-foreground shrink-0 ml-1">
-                      {statusLabels[member.status] ?? member.status}
+                      {t(`team.${member.status}`)}
                     </span>
                   </div>
                   <div className="text-xs text-muted-foreground truncate mt-0.5">
@@ -225,7 +214,7 @@ function ChatPanel({
               {employee.name[0]}
             </div>
             <div
-              className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-card ${statusColors[employee.status] ?? "bg-gray-400"}`}
+              className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-card ${getEmployeeStatusColor(employee.status)}`}
             />
           </div>
           <div>
@@ -234,7 +223,7 @@ function ChatPanel({
               <span>{employee.role.title}</span>
               <span>·</span>
               <span>
-                {statusLabels[employee.status] ?? employee.status}
+                {t(`team.${employee.status}`)}
               </span>
             </div>
           </div>
@@ -441,6 +430,7 @@ function ChatPanel({
 export default function ChatPage() {
   const params = useParams();
   const router = useRouter();
+  const { t } = useTranslation();
   const employeeId = params.employeeId as string;
 
   // Team members for sidebar

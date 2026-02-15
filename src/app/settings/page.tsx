@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Header } from "@/components/layout/header";
+import { useTranslation } from "@/lib/i18n";
 import {
   Card,
   CardContent,
@@ -39,6 +40,7 @@ import {
   CheckCircle2,
   Sparkles,
   Loader2,
+  Settings,
 } from "lucide-react";
 
 const llmProviders = [
@@ -93,7 +95,7 @@ const modalityLabels: Record<string, { label: string; color: string }> = {
   file: { label: "File", color: "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" },
 };
 
-function ModalityBadges({ input, output }: { input?: string[]; output?: string[] }) {
+function ModalityBadges({ input, output, t }: { input?: string[]; output?: string[]; t: (k: string) => string }) {
   if (!input?.length && !output?.length) return null;
 
   const renderBadge = (mod: string) => {
@@ -112,13 +114,13 @@ function ModalityBadges({ input, output }: { input?: string[]; output?: string[]
     <div className="mt-1 space-y-0.5">
       {input && input.length > 0 && (
         <div className="flex items-center gap-1 flex-wrap">
-          <span className="text-[10px] text-muted-foreground w-10 shrink-0">Input</span>
+          <span className="text-[10px] text-muted-foreground w-10 shrink-0">{t("settings.input")}</span>
           {input.map((m) => renderBadge(m))}
         </div>
       )}
       {output && output.length > 0 && (
         <div className="flex items-center gap-1 flex-wrap">
-          <span className="text-[10px] text-muted-foreground w-10 shrink-0">Output</span>
+          <span className="text-[10px] text-muted-foreground w-10 shrink-0">{t("settings.output")}</span>
           {output.map((m) => renderBadge(m))}
         </div>
       )}
@@ -242,6 +244,7 @@ function PromptAssistBar({
   currentPrompt?: string;
   onUpdate: (prompt: string) => void;
 }) {
+  const { t } = useTranslation();
   // Generate mode: one-click, stream into textarea
   const handleGenerate = async () => {
     const context = currentPrompt?.trim()
@@ -270,7 +273,7 @@ function PromptAssistBar({
         ) : (
           <Sparkles className="h-3.5 w-3.5" />
         )}
-        {assist.loading ? "Generating..." : "AI Generate"}
+        {assist.loading ? t("settings.generating") : t("settings.aiGenerate")}
       </Button>
     );
   }
@@ -286,7 +289,7 @@ function PromptAssistBar({
         onClick={() => assist.setShowInput(true)}
       >
         <Sparkles className="h-3.5 w-3.5" />
-        AI Refine
+        {t("settings.aiRefine")}
       </Button>
     );
   }
@@ -298,7 +301,7 @@ function PromptAssistBar({
         <Input
           value={assist.instruction}
           onChange={(e) => assist.setInstruction(e.target.value)}
-          placeholder="How to improve, e.g. 'Make it more concise' or 'Add error handling guidelines'"
+          placeholder={t("settings.refinePlaceholder")}
           className="text-sm h-8"
           autoFocus
           onKeyDown={(e) => {
@@ -317,7 +320,7 @@ function PromptAssistBar({
         {assist.loading ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
-          "Refine"
+          t("settings.refine")
         )}
       </Button>
       <Button
@@ -327,7 +330,7 @@ function PromptAssistBar({
         onClick={() => assist.setShowInput(false)}
         disabled={assist.loading}
       >
-        Cancel
+        {t("common.cancel")}
       </Button>
     </div>
   );
@@ -336,6 +339,7 @@ function PromptAssistBar({
 // ─── Main Page ──────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
+  const { t, locale, setLocale } = useTranslation();
   const [roles, setRoles] = useState<AgentRole[]>([]);
   const [loadingRoles, setLoadingRoles] = useState(true);
 
@@ -410,7 +414,7 @@ export default function SettingsPage() {
         setTimeout(() => setSaved(false), 3000);
       } else {
         const err = await res.json();
-        alert(err.error || "Failed to save .env");
+        alert(err.error || t("settings.failedSave"));
       }
     } finally {
       setSavingEnv(false);
@@ -461,7 +465,7 @@ export default function SettingsPage() {
         fetchRoles();
       } else {
         const err = await res.json();
-        alert(err.error || "Failed to update role");
+        alert(err.error || t("settings.failedUpdate"));
       }
     } finally {
       setSaving(false);
@@ -502,7 +506,7 @@ export default function SettingsPage() {
         fetchRoles();
       } else {
         const err = await res.json();
-        alert(err.error || "Failed to create role");
+        alert(err.error || t("settings.failedCreate"));
       }
     } finally {
       setCreating(false);
@@ -512,22 +516,50 @@ export default function SettingsPage() {
   return (
     <div>
       <Header
-        title="Settings"
-        description="Configure LLM providers and manage agent roles"
+        title={t("settings.title")}
+        description={t("settings.description")}
       />
 
       <div className="p-6 max-w-4xl">
-        <Tabs defaultValue="providers">
+        <Tabs defaultValue="general">
           <TabsList>
+            <TabsTrigger value="general">
+              <Settings className="h-4 w-4 mr-1" />
+              {t("settings.language")}
+            </TabsTrigger>
             <TabsTrigger value="providers">
               <Key className="h-4 w-4 mr-1" />
-              LLM Providers
+              {t("settings.llmProviders")}
             </TabsTrigger>
             <TabsTrigger value="roles">
               <Users className="h-4 w-4 mr-1" />
-              Agent Roles
+              {t("settings.agentRoles")}
             </TabsTrigger>
           </TabsList>
+
+          {/* General / Language */}
+          <TabsContent value="general" className="space-y-6 mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("settings.language")}</CardTitle>
+                <CardDescription>{t("settings.languageDescription")}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Select
+                  value={locale}
+                  onValueChange={(v) => setLocale(v as "en" | "zh")}
+                >
+                  <SelectTrigger className="w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="en">{t("settings.english")}</SelectItem>
+                    <SelectItem value="zh">{t("settings.chinese")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           {/* LLM Providers Tab */}
           <TabsContent value="providers" className="space-y-6 mt-4">
@@ -535,20 +567,16 @@ export default function SettingsPage() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Key className="h-5 w-5" />
-                  Environment Variables
+                  {t("settings.envVars")}
                 </CardTitle>
                 <CardDescription>
-                  Edit your{" "}
-                  <code className="text-xs bg-muted px-1 py-0.5 rounded">
-                    .env
-                  </code>{" "}
-                  file directly. Changes take effect immediately after saving.
+                  {t("settings.envDescription")}
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 {loadingEnv ? (
                   <div className="text-center py-8 text-muted-foreground">
-                    Loading...
+                    {t("settings.loading")}
                   </div>
                 ) : (
                   <>
@@ -563,15 +591,15 @@ export default function SettingsPage() {
                         {saved ? (
                           <span className="flex items-center gap-1 text-green-600">
                             <CheckCircle2 className="h-3 w-3" />
-                            Saved — env vars reloaded
+                            {t("settings.savedReloaded")}
                           </span>
                         ) : envDirty ? (
                           <span className="text-yellow-600">
-                            Unsaved changes
+                            {t("common.unsavedChanges")}
                           </span>
                         ) : (
                           <span className="text-muted-foreground">
-                            No changes
+                            {t("common.noChanges")}
                           </span>
                         )}
                       </div>
@@ -581,7 +609,7 @@ export default function SettingsPage() {
                         size="sm"
                       >
                         <Save className="h-4 w-4 mr-1" />
-                        {savingEnv ? "Saving..." : "Save"}
+                        {savingEnv ? t("settings.saving") : t("common.save")}
                       </Button>
                     </div>
                   </>
@@ -592,7 +620,7 @@ export default function SettingsPage() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">
-                  Provider API Key References
+                  {t("settings.providerApiKeys")}
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -621,10 +649,10 @@ export default function SettingsPage() {
                 <div>
                   <CardTitle className="flex items-center gap-2">
                     <Users className="h-5 w-5" />
-                    Agent Roles
+                    {t("settings.agentRoles")}
                   </CardTitle>
                   <CardDescription className="mt-1">
-                    Click any role to edit its prompt and model configuration
+                    {t("settings.clickToEdit")}
                   </CardDescription>
                 </div>
                 <Dialog
@@ -637,27 +665,27 @@ export default function SettingsPage() {
                   <DialogTrigger asChild>
                     <Button size="sm">
                       <Plus className="h-4 w-4 mr-1" />
-                      Custom Role
+                      {t("settings.customRole")}
                     </Button>
                   </DialogTrigger>
                   <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
-                      <DialogTitle>Create Custom Role</DialogTitle>
+                      <DialogTitle>{t("settings.createCustomRole")}</DialogTitle>
                     </DialogHeader>
                     <div className="space-y-4 pt-2">
                       <div>
-                        <label className="text-sm font-medium">Role Name</label>
+                        <label className="text-sm font-medium">{t("settings.roleName")}</label>
                         <Input
                           value={newTitle}
                           onChange={(e) => setNewTitle(e.target.value)}
-                          placeholder="e.g. DevOps Engineer"
+                          placeholder={t("settings.roleNamePlaceholder")}
                           className="mt-1"
                         />
                       </div>
                       <div>
                         <div className="flex items-center justify-between mb-1">
                           <label className="text-sm font-medium">
-                            System Prompt
+                            {t("settings.systemPrompt")}
                           </label>
                           <PromptAssistBar
                             assist={createAssist}
@@ -670,7 +698,7 @@ export default function SettingsPage() {
                         <Textarea
                           value={newPrompt}
                           onChange={(e) => setNewPrompt(e.target.value)}
-                          placeholder="Define the role's expertise, responsibilities, and working style... or use AI Generate above."
+                          placeholder={t("settings.systemPromptPlaceholder")}
                           className="mt-1 font-mono text-sm"
                           rows={12}
                         />
@@ -678,7 +706,7 @@ export default function SettingsPage() {
                       <div className="grid grid-cols-2 gap-3">
                         <div>
                           <label className="text-sm font-medium">
-                            Provider
+                            {t("settings.provider")}
                           </label>
                           <Select
                             value={newProvider}
@@ -700,14 +728,14 @@ export default function SettingsPage() {
                           </Select>
                         </div>
                         <div>
-                          <label className="text-sm font-medium">Model</label>
+                          <label className="text-sm font-medium">{t("settings.model")}</label>
                           <Input
                             value={newModel}
                             onChange={(e) => setNewModel(e.target.value)}
                             onBlur={() => {
                               if (newModel && newProvider) createCaps.fetchCaps(newProvider, newModel);
                             }}
-                            placeholder="gpt-4o"
+                            placeholder={t("settings.modelPlaceholder")}
                             className="mt-1"
                           />
                         </div>
@@ -716,15 +744,16 @@ export default function SettingsPage() {
                       {createCaps.loading && (
                         <p className="text-xs text-muted-foreground flex items-center gap-1">
                           <Loader2 className="h-3 w-3 animate-spin" />
-                          Detecting model capabilities...
+                          {t("settings.detectingCapabilities")}
                         </p>
                       )}
                       {createCaps.caps && !createCaps.loading && (
                         <div className="rounded-md border bg-muted/30 p-3">
-                          <p className="text-xs font-medium mb-1.5">Model Capabilities</p>
+                          <p className="text-xs font-medium mb-1.5">{t("settings.modelCapabilities")}</p>
                           <ModalityBadges
                             input={createCaps.caps.inputModalities}
                             output={createCaps.caps.outputModalities}
+                            t={t}
                           />
                         </div>
                       )}
@@ -733,7 +762,7 @@ export default function SettingsPage() {
                         disabled={!newTitle || !newPrompt || creating}
                         className="w-full"
                       >
-                        {creating ? "Creating..." : "Create Role"}
+                        {creating ? t("settings.creating") : t("settings.createRole")}
                       </Button>
                     </div>
                   </DialogContent>
@@ -742,7 +771,7 @@ export default function SettingsPage() {
               <CardContent>
                 {loadingRoles ? (
                   <div className="text-center py-8 text-muted-foreground">
-                    Loading roles...
+                    {t("settings.loadingRoles")}
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -762,7 +791,7 @@ export default function SettingsPage() {
                                   variant="secondary"
                                   className="text-xs"
                                 >
-                                  Built-in
+                                  {t("settings.builtinRole")}
                                 </Badge>
                               )}
                             </div>
@@ -772,6 +801,7 @@ export default function SettingsPage() {
                             <ModalityBadges
                               input={config.inputModalities}
                               output={config.outputModalities}
+                              t={t}
                             />
                           </div>
                           <div className="flex-1 min-w-0 rounded-md bg-muted/50 border border-dashed px-3 py-2">
@@ -803,15 +833,15 @@ export default function SettingsPage() {
       >
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Edit Role: {editRole?.title}</DialogTitle>
+            <DialogTitle>{t("settings.editRole")}: {editRole?.title}</DialogTitle>
             <DialogDescription>
               <span className="font-mono">{editRole?.name}</span>
-              {editRole?.isBuiltin && " · Built-in role"}
+              {editRole?.isBuiltin && ` · ${t("settings.builtinRole")}`}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 pt-2">
             <div>
-              <label className="text-sm font-medium">Display Name</label>
+              <label className="text-sm font-medium">{t("settings.displayName")}</label>
               <Input
                 value={editTitle}
                 onChange={(e) => setEditTitle(e.target.value)}
@@ -820,7 +850,7 @@ export default function SettingsPage() {
             </div>
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-sm font-medium">System Prompt</label>
+                <label className="text-sm font-medium">{t("settings.systemPrompt")}</label>
                 <PromptAssistBar
                   assist={editAssist}
                   mode="refine"
@@ -838,7 +868,7 @@ export default function SettingsPage() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-sm font-medium">Provider</label>
+                <label className="text-sm font-medium">{t("settings.provider")}</label>
                 <Select
                   value={editProvider}
                   onValueChange={(v) => {
@@ -859,7 +889,7 @@ export default function SettingsPage() {
                 </Select>
               </div>
               <div>
-                <label className="text-sm font-medium">Model</label>
+                <label className="text-sm font-medium">{t("settings.model")}</label>
                 <Input
                   value={editModel}
                   onChange={(e) => setEditModel(e.target.value)}
@@ -883,18 +913,19 @@ export default function SettingsPage() {
                 <ModalityBadges
                   input={editCaps.caps.inputModalities}
                   output={editCaps.caps.outputModalities}
+                  t={t}
                 />
               </div>
             )}
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => setEditRole(null)}>
-                Cancel
+                {t("common.cancel")}
               </Button>
               <Button
                 onClick={handleSaveEdit}
                 disabled={!editTitle || !editPrompt || saving}
               >
-                {saving ? "Saving..." : "Save Changes"}
+                {saving ? t("settings.saving") : t("settings.saveChanges")}
               </Button>
             </div>
           </div>

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
 import { projectManager } from "@/core/project";
 
 export async function GET(
@@ -11,7 +12,13 @@ export async function GET(
     if (!project) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
-    return NextResponse.json(project);
+    const usages = await prisma.tokenUsage.aggregate({
+      where: { projectId: id },
+      _sum: { inputTokens: true, outputTokens: true },
+    });
+    const tokenCount =
+      (usages._sum.inputTokens ?? 0) + (usages._sum.outputTokens ?? 0);
+    return NextResponse.json({ ...project, tokenCount });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to get project" },

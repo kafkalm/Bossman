@@ -22,6 +22,8 @@ import {
 } from "@/components/ui/select";
 import { Plus, User, MessageCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { getEmployeeStatusColor } from "@/lib/constants";
+import { useTranslation } from "@/lib/i18n";
 
 interface Role {
   id: string;
@@ -96,23 +98,19 @@ export default function TeamPage() {
     }
   };
 
-  const statusColors: Record<string, string> = {
-    idle: "bg-gray-400",
-    busy: "bg-green-500",
-    offline: "bg-red-400",
-  };
+  const { t } = useTranslation();
 
   return (
     <div>
       <Header
-        title="Team"
-        description="Manage your AI company team members"
+        title={t("team.title")}
+        description={t("team.description")}
         actions={
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
               <Button>
                 <Plus className="h-4 w-4 mr-1" />
-                Hire Agent
+                {t("team.hireAgent")}
               </Button>
             </DialogTrigger>
             <DialogContent>
@@ -169,9 +167,9 @@ export default function TeamPage() {
         ) : employees.length === 0 ? (
           <div className="text-center py-12">
             <User className="h-12 w-12 mx-auto text-muted-foreground/50" />
-            <h3 className="mt-4 text-lg font-medium">No team members yet</h3>
+            <h3 className="mt-4 text-lg font-medium">{t("team.noMembers")}</h3>
             <p className="text-muted-foreground mt-1">
-              Set up your company from the Dashboard first.
+              {t("team.setUpFirst")}
             </p>
           </div>
         ) : (
@@ -189,7 +187,7 @@ export default function TeamPage() {
                         {emp.name[0]}
                       </div>
                       <div
-                        className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-card ${statusColors[emp.status] ?? "bg-gray-400"}`}
+                        className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-card ${getEmployeeStatusColor(emp.status)}`}
                       />
                     </div>
                     <div className="flex-1 min-w-0">
@@ -198,15 +196,15 @@ export default function TeamPage() {
                         {emp.role.title}
                       </div>
                       <div className="flex items-center gap-1.5 mt-2">
-                        <span className="text-xs text-muted-foreground capitalize">
-                          {emp.status === "busy" ? "忙碌中" : emp.status === "idle" ? "空闲" : emp.status}
+                        <span className="text-xs text-muted-foreground">
+                          {t(`team.${emp.status}`)}
                         </span>
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-2">
                       {emp.role.isBuiltin && (
                         <Badge variant="secondary" className="text-xs">
-                          Built-in
+                          {t("team.builtin")}
                         </Badge>
                       )}
                       <Button

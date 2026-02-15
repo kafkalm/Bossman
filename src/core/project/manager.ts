@@ -53,6 +53,13 @@ export class ProjectManager {
             sender: { include: { role: true } },
           },
         },
+        files: {
+          orderBy: { createdAt: "asc" },
+          include: {
+            employee: { include: { role: true } },
+            task: { select: { id: true, title: true } },
+          },
+        },
       },
     });
   }

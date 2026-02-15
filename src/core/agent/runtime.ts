@@ -124,8 +124,8 @@ export class AgentRuntime {
       // 7. Record token usage
       await recordTokenUsage(employeeId, projectId, response.usage);
 
-      // 8. Save response as a message
-      if (response.content) {
+      // 8. Save response as a message (except for task executions - workflow handles those)
+      if (response.content && !taskId) {
         await prisma.message.create({
           data: {
             projectId,
@@ -140,16 +140,9 @@ export class AgentRuntime {
         });
       }
 
-      // 9. Update task output if this is a task execution
-      if (taskId && response.content) {
-        await prisma.task.update({
-          where: { id: taskId },
-          data: {
-            output: response.content,
-            status: "completed",
-          },
-        });
-      }
+      // 9. Task output/status and task execution messages are handled by the workflow
+      //    tool calls (e.g. report_to_ceo). The actual deliverable may be in
+      //    the tool call, not in response.content.
 
       this.emit({
         type: "agent:complete",

@@ -56,6 +56,11 @@ export async function GET(request: Request) {
       byEmployee[key].calls += 1;
     }
 
+    const byEmployeeList = Object.values(byEmployee).sort(
+      (a, b) =>
+        b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens)
+    );
+
     return NextResponse.json({
       total: {
         inputTokens: totalInput,
@@ -64,7 +69,7 @@ export async function GET(request: Request) {
         cost: totalCost,
         calls: usages.length,
       },
-      byEmployee: Object.values(byEmployee),
+      byEmployee: byEmployeeList,
       recent: usages.slice(0, 20),
     });
   } catch (error) {

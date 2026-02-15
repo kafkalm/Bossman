@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
 import { projectManager } from "@/core/project";
 import { projectWorkflow } from "@/core/project";
 import { companyManager } from "@/core/company";
@@ -8,7 +9,24 @@ export async function GET() {
   try {
     const companyId = await companyManager.getCompanyId();
     const projects = await projectManager.listProjects(companyId ?? undefined);
-    return NextResponse.json(projects);
+    const projectIds = projects.map((p) => p.id);
+    const usages = await prisma.tokenUsage.groupBy({
+      by: ["projectId"],
+      where: { projectId: { in: projectIds } },
+      _sum: { inputTokens: true, outputTokens: true },
+    });
+    const tokenByProject: Record<string, number> = {};
+    for (const u of usages) {
+      if (u.projectId) {
+        tokenByProject[u.projectId] =
+          (u._sum.inputTokens ?? 0) + (u._sum.outputTokens ?? 0);
+      }
+    }
+    const projectsWithTokens = projects.map((p) => ({
+      ...p,
+      tokenCount: tokenByProject[p.id] ?? 0,
+    }));
+    return NextResponse.json(projectsWithTokens);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to list projects" },
