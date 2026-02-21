@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, User, MessageCircle, Sparkles } from "lucide-react";
+import { Plus, User, MessageCircle, Sparkles, Loader2 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useRouter } from "next/navigation";
 import { getEmployeeStatusColor } from "@/lib/constants";
@@ -30,7 +30,9 @@ interface Role {
   id: string;
   name: string;
   title: string;
+  systemPrompt?: string;
   isBuiltin: boolean;
+  skills?: { skill: { id: string; name: string } }[];
 }
 
 interface Employee {
@@ -49,6 +51,9 @@ export default function TeamPage() {
   const [hiring, setHiring] = useState(false);
   const [newName, setNewName] = useState("");
   const [selectedRoleId, setSelectedRoleId] = useState("");
+  const [detailEmployee, setDetailEmployee] = useState<Employee | null>(null);
+  const [detailSkills, setDetailSkills] = useState<{ id: string; name: string }[]>([]);
+  const [detailSkillsLoading, setDetailSkillsLoading] = useState(false);
 
   const fetchTeam = async () => {
     try {
@@ -78,6 +83,18 @@ export default function TeamPage() {
     fetchTeam();
     fetchRoles();
   }, []);
+
+  useEffect(() => {
+    if (!detailEmployee) {
+      setDetailSkills([]);
+      return;
+    }
+    setDetailSkillsLoading(true);
+    fetch(`/api/team/${detailEmployee.id}/skills`)
+      .then((r) => (r.ok ? r.json() : { skills: [] }))
+      .then((data) => setDetailSkills(data.skills ?? []))
+      .finally(() => setDetailSkillsLoading(false));
+  }, [detailEmployee?.id]);
 
   const handleHire = async () => {
     if (!newName.trim() || !selectedRoleId) return;
@@ -179,7 +196,7 @@ export default function TeamPage() {
               <Card
                 key={emp.id}
                 className="cursor-pointer transition-shadow hover:shadow-md"
-                onClick={() => router.push(`/team/${emp.id}`)}
+                onClick={() => setDetailEmployee(emp)}
               >
                 <CardContent className="pt-6">
                   <div className="flex items-start gap-4">
@@ -231,6 +248,88 @@ export default function TeamPage() {
           </div>
         )}
       </div>
+
+      {/* Employee detail dialog */}
+      <Dialog open={!!detailEmployee} onOpenChange={(open) => !open && setDetailEmployee(null)}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          {detailEmployee && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary font-bold">
+                    {detailEmployee.name[0]}
+                  </div>
+                  {detailEmployee.name}
+                </DialogTitle>
+                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  <span>{detailEmployee.role.title}</span>
+                  <span>·</span>
+                  <span>{t(`team.${detailEmployee.status}`)}</span>
+                  {detailEmployee.role.isBuiltin && (
+                    <Badge variant="secondary" className="text-xs">
+                      {t("team.builtin")}
+                    </Badge>
+                  )}
+                </div>
+              </DialogHeader>
+              <div className="space-y-4 pt-2">
+                {detailEmployee.role.systemPrompt && (
+                  <div>
+                    <label className="text-sm font-medium">{t("team.systemPrompt")}</label>
+                    <pre className="mt-1.5 max-h-48 overflow-auto rounded-md border bg-muted/30 p-3 text-xs whitespace-pre-wrap font-sans">
+                      {detailEmployee.role.systemPrompt}
+                    </pre>
+                  </div>
+                )}
+                <div>
+                  <label className="text-sm font-medium flex items-center gap-1.5">
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {t("team.skillsLabel")}
+                  </label>
+                  {detailSkillsLoading ? (
+                    <p className="mt-1.5 text-xs text-muted-foreground flex items-center gap-1.5">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      {t("common.loading")}
+                    </p>
+                  ) : (() => {
+                    const roleSkills = detailEmployee.role.skills?.map((s) => s.skill) ?? [];
+                    const employeeSkillIds = new Set(detailSkills.map((s) => s.id));
+                    const roleOnly = roleSkills.filter((s) => !employeeSkillIds.has(s.id));
+                    const merged = [...detailSkills, ...roleOnly];
+                    if (merged.length === 0) {
+                      return (
+                        <p className="mt-1.5 text-xs text-muted-foreground">{t("skills.noSkills")}</p>
+                      );
+                    }
+                    return (
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {merged.map((s) => (
+                          <Badge key={s.id} variant="outline" className="text-xs font-normal">
+                            {s.name}
+                          </Badge>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="outline" onClick={() => setDetailEmployee(null)}>
+                    {t("common.cancel")}
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      if (detailEmployee) router.push(`/team/${detailEmployee.id}`);
+                    }}
+                  >
+                    <MessageCircle className="h-4 w-4 mr-1" />
+                    {t("team.goToChat")}
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

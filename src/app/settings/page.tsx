@@ -68,6 +68,7 @@ interface AgentRole {
   systemPrompt: string;
   modelConfig: string;
   isBuiltin: boolean;
+  skills?: { skill: { id: string; name: string } }[];
 }
 
 interface ModelConfig {
@@ -517,8 +518,16 @@ export default function SettingsPage() {
 
   const handleBatchApply = async () => {
     const roleIds = Array.from(selectedRoleIds);
-    const payload: { roleIds: string[]; skillIds?: string[]; modelConfig?: Record<string, unknown> } = { roleIds };
-    if (batchSkillIds.size > 0) payload.skillIds = Array.from(batchSkillIds);
+    const payload: {
+      roleIds: string[];
+      skillIds?: string[];
+      skillMode?: "add" | "replace";
+      modelConfig?: Record<string, unknown>;
+    } = { roleIds };
+    if (batchSkillIds.size > 0) {
+      payload.skillIds = Array.from(batchSkillIds);
+      payload.skillMode = "add";
+    }
     if (batchProvider && batchModel) {
       payload.modelConfig = { provider: batchProvider, model: batchModel };
     }
@@ -537,7 +546,31 @@ export default function SettingsPage() {
         setBatchProvider("");
         setBatchModel("");
         fetchRoles();
-        // toast or brief message - use alert for now or a simple state
+        alert(t("settings.batchSuccess"));
+      } else {
+        const err = await res.json();
+        alert(err.error || t("settings.batchError"));
+      }
+    } finally {
+      setBatchSaving(false);
+    }
+  };
+
+  const handleBatchClearSkills = async () => {
+    if (!confirm(t("settings.clearSkillsConfirm"))) return;
+    const roleIds = Array.from(selectedRoleIds);
+    setBatchSaving(true);
+    try {
+      const res = await fetch("/api/roles/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roleIds, skillIds: [], skillMode: "replace" }),
+      });
+      if (res.ok) {
+        setBatchEditOpen(false);
+        setSelectedRoleIds(new Set());
+        setBatchSkillIds(new Set());
+        fetchRoles();
         alert(t("settings.batchSuccess"));
       } else {
         const err = await res.json();
@@ -916,6 +949,20 @@ export default function SettingsPage() {
                               output={config.outputModalities ?? ["text"]}
                               t={t}
                             />
+                            {role.skills && role.skills.length > 0 && (
+                              <div className="flex items-center gap-1 flex-wrap mt-2">
+                                <Sparkles className="h-3 w-3 text-muted-foreground shrink-0" />
+                                {role.skills.map(({ skill }) => (
+                                  <Badge
+                                    key={skill.id}
+                                    variant="outline"
+                                    className="text-[10px] font-normal py-0 px-1.5"
+                                  >
+                                    {skill.name}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
                           </div>
                           <div className="flex-1 min-w-0 rounded-md bg-muted/50 border border-dashed px-3 py-2">
                             <p className="text-xs text-muted-foreground line-clamp-2 whitespace-pre-wrap">
@@ -1196,19 +1243,30 @@ export default function SettingsPage() {
                 </div>
               </div>
             </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <Button variant="outline" onClick={() => setBatchEditOpen(false)}>
-                {t("common.cancel")}
-              </Button>
+            <div className="flex justify-between pt-2">
               <Button
-                onClick={handleBatchApply}
-                disabled={
-                  batchSaving ||
-                  (batchSkillIds.size === 0 && (!batchProvider || !batchModel))
-                }
+                variant="outline"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={handleBatchClearSkills}
+                disabled={batchSaving || selectedRoleIds.size === 0}
               >
-                {batchSaving ? t("settings.saving") : t("settings.applyToSelected")}
+                {t("settings.clearSkills")}
               </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => setBatchEditOpen(false)}>
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  onClick={handleBatchApply}
+                  disabled={
+                    batchSaving ||
+                    (batchSkillIds.size === 0 && (!batchProvider || !batchModel))
+                  }
+                >
+                  {batchSaving ? t("settings.saving") : t("settings.applyToSelected")}
+                </Button>
+              </div>
             </div>
           </div>
         </DialogContent>

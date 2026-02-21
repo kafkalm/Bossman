@@ -90,6 +90,8 @@ export class ProjectManager {
 
   /**
    * Create a task for a project.
+   * When creating and immediately assigning (e.g. CEO assign_task), pass status: "assigned"
+   * so the task never appears as "pending".
    */
   async createTask(options: {
     projectId: string;
@@ -97,6 +99,7 @@ export class ProjectManager {
     description: string;
     parentId?: string;
     priority?: number;
+    status?: string;
   }) {
     return prisma.task.create({
       data: {
@@ -105,6 +108,7 @@ export class ProjectManager {
         description: options.description,
         parentId: options.parentId,
         priority: options.priority ?? 0,
+        status: options.status ?? "pending",
       },
     });
   }

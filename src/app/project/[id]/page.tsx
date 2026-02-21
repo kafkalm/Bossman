@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useState, useRef, use, useCallback } from "react";
+import { useEffect, useLayoutEffect, useState, useRef, use, useCallback } from "react";
 import Link from "next/link";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -17,6 +16,12 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   ArrowLeft,
   Send,
@@ -42,6 +47,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getEmployeeStatusColor, getProjectStatusColor } from "@/lib/constants";
 import { useTranslation } from "@/lib/i18n";
+import { sanitizeDocumentContent } from "@/lib/sanitize-document";
 
 interface Task {
   id: string;
@@ -159,6 +165,7 @@ export default function ProjectDetailPage(props: {
   const [isResizing, setIsResizing] = useState(false);
   const resizeStartRef = useRef<{ x: number; w: number } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchProject = useCallback(async () => {
@@ -220,35 +227,56 @@ export default function ProjectDetailPage(props: {
     setIsResizing(true);
   }, [docTreeWidth]);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [project?.messages?.length]);
+  const scrollChatToBottom = useCallback(() => {
+    const el = chatScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
 
   useEffect(() => {
-    if (selectedFileId && activeTab === "document") {
-      const file = project?.files?.find((f) => f.id === selectedFileId);
-      if (file) {
-        setExpandedEmployeeIds((prev) =>
-          new Set(prev).add(file.employee.id)
-        );
-      }
-      const el = document.getElementById(selectedFileId);
-      el?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [selectedFileId, activeTab, project?.files]);
+    scrollChatToBottom();
+  }, [project?.messages?.length, scrollChatToBottom]);
 
   useEffect(() => {
-    if (selectedCodeFileId && activeTab === "code") {
-      const file = project?.files?.find((f) => f.id === selectedCodeFileId);
+    if (!project) return;
+    const docFiles = (project.files ?? []).filter(
+      (f) => (f.fileType ?? "document") === "document"
+    );
+    const codeFiles = (project.files ?? []).filter((f) => f.fileType === "code");
+    const hasDocFiles = !!project.document || docFiles.length > 0;
+    const hasCodeFiles = codeFiles.length > 0;
+    const effectiveTab =
+      activeTab ||
+      (hasDocFiles || hasCodeFiles ? "workspace" : "chat");
+    if (effectiveTab === "chat") {
+      const t1 = setTimeout(scrollChatToBottom, 0);
+      const t2 = setTimeout(scrollChatToBottom, 150);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+  }, [activeTab, project, scrollChatToBottom]);
+
+  useEffect(() => {
+    if (activeTab !== "workspace") return;
+    const fileId = selectedFileId || selectedCodeFileId;
+    if (fileId) {
+      const file = project?.files?.find((f) => f.id === fileId);
       if (file) {
-        setExpandedCodeEmployeeIds((prev) =>
-          new Set(prev).add(file.employee.id)
-        );
+        if (file.fileType === "code") {
+          setExpandedCodeEmployeeIds((prev) =>
+            new Set(prev).add(file.employee.id)
+          );
+        } else {
+          setExpandedEmployeeIds((prev) =>
+            new Set(prev).add(file.employee.id)
+          );
+        }
       }
-      const el = document.getElementById(selectedCodeFileId);
+      const el = document.getElementById(fileId);
       el?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
-  }, [selectedCodeFileId, activeTab, project?.files]);
+  }, [activeTab, selectedFileId, selectedCodeFileId, project?.files]);
 
   const handleSendMessage = async () => {
     if (!message.trim() || sending) return;
@@ -293,16 +321,21 @@ export default function ProjectDetailPage(props: {
       ? Math.round((completedTasks.length / allTasks.length) * 100)
       : 0;
 
-  // Group tasks by status for kanban
-  const tasksByStatus: Record<string, Task[]> = {
-    pending: [],
-    assigned: [],
-    in_progress: [],
-    completed: [],
-    blocked: [],
-  };
+  // Group tasks by status for kanban (must match DB: pending, assigned, in_progress, review, completed, blocked)
+  const kanbanStatusOrder = [
+    "pending",
+    "assigned",
+    "in_progress",
+    "review",
+    "completed",
+    "blocked",
+  ] as const;
+  const tasksByStatus: Record<string, Task[]> = Object.fromEntries(
+    kanbanStatusOrder.map((s) => [s, []])
+  ) as Record<string, Task[]>;
   for (const task of allTasks) {
-    const group = tasksByStatus[task.status] ?? tasksByStatus.pending;
+    const group =
+      tasksByStatus[task.status] ?? tasksByStatus.pending;
     group.push(task);
   }
 
@@ -317,20 +350,23 @@ export default function ProjectDetailPage(props: {
   const hasCodeFiles = codeFiles.length > 0;
   const defaultTab =
     activeTab ||
-    (hasDocFiles ? "document" : hasCodeFiles ? "code" : "chat");
+    (hasDocFiles || hasCodeFiles ? "workspace" : "chat");
 
   const handleViewFile = (fileId: string) => {
     const file = projectFiles.find((f) => f.id === fileId);
     if (file?.fileType === "code") {
-      setActiveTab("code");
+      setActiveTab("workspace");
+      setSelectedProjectDoc(false);
+      setSelectedFileId(null);
       setSelectedCodeFileId(fileId);
       setExpandedCodeEmployeeIds((prev) =>
         new Set(prev).add(file.employee.id)
       );
     } else if (file) {
-      setActiveTab("document");
+      setActiveTab("workspace");
       setSelectedProjectDoc(false);
       setSelectedFileId(fileId);
+      setSelectedCodeFileId(null);
       setExpandedEmployeeIds((prev) =>
         new Set(prev).add(file.employee.id)
       );
@@ -397,24 +433,26 @@ export default function ProjectDetailPage(props: {
       <div className="flex-1 overflow-hidden">
         <Tabs
           value={defaultTab}
-          onValueChange={(v) => setActiveTab(v)}
+          onValueChange={(v) => {
+            setActiveTab(v);
+            if (v === "chat") {
+              setTimeout(() => scrollChatToBottom(), 0);
+              setTimeout(() => scrollChatToBottom(), 150);
+            }
+          }}
           className="flex flex-col h-full"
         >
           <div className="border-b px-6">
             <TabsList className="h-10">
-              <TabsTrigger value="document" className="gap-1.5">
-                <FileText className="h-3.5 w-3.5" />
-                {t("project.documentTab")}
-                {!hasDocument && allTasks.length > 0 && (
+              <TabsTrigger value="workspace" className="gap-1.5">
+                <FolderOpen className="h-3.5 w-3.5" />
+                {t("project.workspaceTab")}
+                {(!hasDocument && allTasks.length > 0) && (
                   <Loader2 className="h-3 w-3 animate-spin ml-1" />
                 )}
-              </TabsTrigger>
-              <TabsTrigger value="code" className="gap-1.5">
-                <Code2 className="h-3.5 w-3.5" />
-                {t("project.codeTab")}
-                {hasCodeFiles && (
+                {((hasDocument ? 1 : 0) + docFiles.length + codeFiles.length) > 0 && (
                   <span className="text-xs text-muted-foreground">
-                    ({codeFiles.length})
+                    ({(hasDocument ? 1 : 0) + docFiles.length + codeFiles.length})
                   </span>
                 )}
               </TabsTrigger>
@@ -431,19 +469,19 @@ export default function ProjectDetailPage(props: {
             </TabsList>
           </div>
 
-          {/* Document Tab: left = directory tree, right = preview */}
+          {/* Workspace Tab: document + code in one tree, single preview */}
           <TabsContent
-            value="document"
+            value="workspace"
             className="flex-1 m-0 flex flex-col min-h-0"
           >
             <div className="flex flex-1 min-h-0">
-              {/* Left: document tree */}
+              {/* Left: unified workspace tree */}
               <aside
                 className="shrink-0 border-r bg-muted/30 flex flex-col min-h-0"
                 style={{ width: docTreeWidth }}
               >
                 <div className="px-3 py-2 border-b text-xs font-medium text-muted-foreground uppercase tracking-wider shrink-0">
-                  {t("project.directoryTitle")}
+                  {t("project.workspaceDirectoryTitle")}
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto py-2">
                   <div className="px-1 space-y-0.5">
@@ -454,6 +492,7 @@ export default function ProjectDetailPage(props: {
                         onClick={() => {
                           setSelectedProjectDoc(true);
                           setSelectedFileId(null);
+                          setSelectedCodeFileId(null);
                         }}
                         className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-sm transition-colors ${
                           selectedProjectDoc
@@ -466,7 +505,7 @@ export default function ProjectDetailPage(props: {
                       </button>
                     )}
 
-                    {/* Employee folders */}
+                    {/* Document files by employee */}
                     {docFiles.length > 0 &&
                       (() => {
                         const byEmployee = docFiles.reduce<
@@ -532,6 +571,7 @@ export default function ProjectDetailPage(props: {
                                                 onClick={() => {
                                                   setSelectedProjectDoc(false);
                                                   setSelectedFileId(file.id);
+                                                  setSelectedCodeFileId(null);
                                                 }}
                                                 className={`w-full flex items-center gap-2 py-1 px-2 rounded text-left text-sm transition-colors ${
                                                   selectedFileId === file.id
@@ -557,119 +597,9 @@ export default function ProjectDetailPage(props: {
                           }
                         );
                       })()}
-                  </div>
-                </div>
-              </aside>
 
-              {/* Resizer */}
-              <div
-                role="separator"
-                aria-orientation="vertical"
-                onMouseDown={handleResizeStart}
-                className={`shrink-0 w-1 cursor-col-resize border-r bg-border hover:bg-primary/30 transition-colors flex items-center justify-center group ${
-                  isResizing ? "bg-primary/50" : ""
-                }`}
-              >
-                <GripVertical className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 group-active:opacity-100" />
-              </div>
-
-              {/* Right: document preview */}
-              <main className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
-                {selectedProjectDoc && hasDocument ? (
-                  <div className="flex-1 min-h-0 overflow-y-auto">
-                    <div className="p-6 max-w-3xl">
-                      <h1 className="text-xl font-semibold mb-4">
-                        {t("project.projectDoc")}
-                      </h1>
-                      <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-6 prose-headings:mb-3 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-blockquote:my-3 prose-table:my-3 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em] prose-a:text-primary prose-img:rounded-lg prose-table:text-sm prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:bg-muted/50 prose-hr:my-6 [&_pre]:my-3 [&_pre]:bg-muted [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:text-base [&_pre]:font-mono [&_pre]:leading-snug [&_pre]:overflow-x-auto [&_pre]:overflow-y-visible [&_pre]:whitespace-pre [&_pre]:min-w-0 [&_pre]:text-foreground">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {project.document!}
-                        </ReactMarkdown>
-                      </div>
-                    </div>
-                  </div>
-                ) : selectedFileId ? (
-                  (() => {
-                    const file = docFiles.find(
-                      (f) => f.id === selectedFileId
-                    );
-                    if (!file) return null;
-                    return (
-                      <div className="flex-1 min-h-0 overflow-y-auto">
-                        <div className="p-6 max-w-3xl">
-                          <div className="flex items-center gap-2 mb-4">
-                            <span className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm text-primary">
-                              {file.employee.name[0]}
-                            </span>
-                            <div>
-                              <h1 className="text-xl font-semibold">
-                                {file.title}
-                              </h1>
-                              <p className="text-sm text-muted-foreground">
-                                {file.employee.name} · {file.employee.role.title}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-6 prose-headings:mb-3 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-blockquote:my-3 prose-table:my-3 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-a:text-primary prose-img:rounded-lg prose-table:text-sm prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:bg-muted/50 prose-hr:my-6 [&_pre]:my-3 [&_pre]:bg-muted [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:text-base [&_pre]:font-mono [&_pre]:leading-snug [&_pre]:overflow-x-auto [&_pre]:overflow-y-visible [&_pre]:whitespace-pre [&_pre]:min-w-0 [&_pre]:text-foreground">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {file.content}
-                            </ReactMarkdown>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })()
-                ) : !hasDocument && docFiles.length === 0 ? (
-                  <div className="flex-1 flex flex-col items-center justify-center py-20 text-center px-6">
-                    {allTasks.length > 0 ? (
-                      <>
-                        <Loader2 className="h-10 w-10 animate-spin text-primary mb-4" />
-                        <h3 className="text-lg font-medium">
-                          {t("project.compiling")}
-                        </h3>
-                        <p className="text-sm text-muted-foreground mt-2 max-w-md">
-                          {t("project.compilingHint")}
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <FileText className="h-12 w-12 text-muted-foreground/50 mb-4" />
-                        <h3 className="text-lg font-medium">
-                          {t("project.projectStarting")}
-                        </h3>
-                        <p className="text-sm text-muted-foreground mt-2 max-w-md">
-                          {t("project.projectStartingHint")}
-                        </p>
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex-1 flex flex-col items-center justify-center py-20 text-center text-muted-foreground px-6">
-                    <FileText className="h-12 w-12 opacity-50 mb-4" />
-                    <p className="text-sm">{t("project.selectDoc")}</p>
-                  </div>
-                )}
-              </main>
-            </div>
-          </TabsContent>
-
-          {/* Code Tab: same layout as Document — left tree, right preview */}
-          <TabsContent
-            value="code"
-            className="flex-1 m-0 flex flex-col min-h-0"
-          >
-            <div className="flex flex-1 min-h-0">
-              {/* Left: code tree */}
-              <aside
-                className="shrink-0 border-r bg-muted/30 flex flex-col min-h-0"
-                style={{ width: docTreeWidth }}
-              >
-                <div className="px-3 py-2 border-b text-xs font-medium text-muted-foreground uppercase tracking-wider shrink-0">
-                  {t("project.codeDirectoryTitle")}
-                </div>
-                <div className="flex-1 min-h-0 overflow-y-auto py-2">
-                  <div className="px-1 space-y-0.5">
-                    {codeFiles.length > 0 ? (
+                    {/* Code files by employee */}
+                    {codeFiles.length > 0 &&
                       (() => {
                         const byEmployee = codeFiles.reduce<
                           Record<string, ProjectFile[]>
@@ -686,7 +616,7 @@ export default function ProjectDetailPage(props: {
                             const isExpanded =
                               expandedCodeEmployeeIds.has(empId);
                             return (
-                              <div key={empId} className="space-y-0.5">
+                              <div key={`code-${empId}`} className="space-y-0.5">
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -733,6 +663,8 @@ export default function ProjectDetailPage(props: {
                                                 type="button"
                                                 id={file.id}
                                                 onClick={() => {
+                                                  setSelectedProjectDoc(false);
+                                                  setSelectedFileId(null);
                                                   setSelectedCodeFileId(file.id);
                                                 }}
                                                 className={`w-full flex items-center gap-2 py-1 px-2 rounded text-left text-sm transition-colors ${
@@ -756,12 +688,7 @@ export default function ProjectDetailPage(props: {
                             );
                           }
                         );
-                      })()
-                    ) : (
-                      <div className="px-3 py-6 text-sm text-muted-foreground text-center">
-                        {t("project.noCodeFiles")}
-                      </div>
-                    )}
+                      })()}
                   </div>
                 </div>
               </aside>
@@ -778,9 +705,53 @@ export default function ProjectDetailPage(props: {
                 <GripVertical className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 group-active:opacity-100" />
               </div>
 
-              {/* Right: code preview */}
+              {/* Right: workspace preview (project doc, doc file, or code file) */}
               <main className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
-                {selectedCodeFileId ? (
+                {selectedProjectDoc && hasDocument ? (
+                  <div className="flex-1 min-h-0 overflow-y-auto">
+                    <div className="p-6 max-w-3xl">
+                      <h1 className="text-xl font-semibold mb-4">
+                        {t("project.projectDoc")}
+                      </h1>
+                      <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-6 prose-headings:mb-3 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-blockquote:my-3 prose-table:my-3 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em] prose-a:text-primary prose-img:rounded-lg prose-table:text-sm prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:bg-muted/50 prose-hr:my-6 [&_pre]:my-3 [&_pre]:bg-muted [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:text-base [&_pre]:font-mono [&_pre]:leading-snug [&_pre]:overflow-x-auto [&_pre]:overflow-y-visible [&_pre]:whitespace-pre [&_pre]:min-w-0 [&_pre]:text-foreground">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {sanitizeDocumentContent(project.document!)}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
+                  </div>
+                ) : selectedFileId ? (
+                  (() => {
+                    const file = docFiles.find(
+                      (f) => f.id === selectedFileId
+                    );
+                    if (!file) return null;
+                    return (
+                      <div className="flex-1 min-h-0 overflow-y-auto">
+                        <div className="p-6 max-w-3xl">
+                          <div className="flex items-center gap-2 mb-4">
+                            <span className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm text-primary">
+                              {file.employee.name[0]}
+                            </span>
+                            <div>
+                              <h1 className="text-xl font-semibold">
+                                {file.title}
+                              </h1>
+                              <p className="text-sm text-muted-foreground">
+                                {file.employee.name} · {file.employee.role.title}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-6 prose-headings:mb-3 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-blockquote:my-3 prose-table:my-3 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-a:text-primary prose-img:rounded-lg prose-table:text-sm prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:bg-muted/50 prose-hr:my-6 [&_pre]:my-3 [&_pre]:bg-muted [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:text-base [&_pre]:font-mono [&_pre]:leading-snug [&_pre]:overflow-x-auto [&_pre]:overflow-y-visible [&_pre]:whitespace-pre [&_pre]:min-w-0 [&_pre]:text-foreground">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {sanitizeDocumentContent(file.content)}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : selectedCodeFileId ? (
                   (() => {
                     const file = codeFiles.find(
                       (f) => f.id === selectedCodeFileId
@@ -809,10 +780,34 @@ export default function ProjectDetailPage(props: {
                       </div>
                     );
                   })()
+                ) : !hasDocument && docFiles.length === 0 && codeFiles.length === 0 ? (
+                  <div className="flex-1 flex flex-col items-center justify-center py-20 text-center px-6">
+                    {allTasks.length > 0 ? (
+                      <>
+                        <Loader2 className="h-10 w-10 animate-spin text-primary mb-4" />
+                        <h3 className="text-lg font-medium">
+                          {t("project.compiling")}
+                        </h3>
+                        <p className="text-sm text-muted-foreground mt-2 max-w-md">
+                          {t("project.compilingHint")}
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="h-12 w-12 text-muted-foreground/50 mb-4" />
+                        <h3 className="text-lg font-medium">
+                          {t("project.projectStarting")}
+                        </h3>
+                        <p className="text-sm text-muted-foreground mt-2 max-w-md">
+                          {t("project.projectStartingHint")}
+                        </p>
+                      </>
+                    )}
+                  </div>
                 ) : (
                   <div className="flex-1 flex flex-col items-center justify-center py-20 text-center text-muted-foreground px-6">
-                    <Code2 className="h-12 w-12 opacity-50 mb-4" />
-                    <p className="text-sm">{t("project.selectCodeFile")}</p>
+                    <FolderOpen className="h-12 w-12 opacity-50 mb-4" />
+                    <p className="text-sm">{t("project.selectWorkspaceFile")}</p>
                   </div>
                 )}
               </main>
@@ -824,7 +819,10 @@ export default function ProjectDetailPage(props: {
             value="chat"
             className="flex-1 flex flex-col m-0 overflow-hidden"
           >
-            <ScrollArea className="flex-1 h-0 p-6">
+            <div
+              ref={chatScrollRef}
+              className="flex-1 min-h-0 overflow-y-auto p-6"
+            >
               <div className="space-y-4 max-w-3xl mx-auto">
                 {/* Project brief */}
                 {project.description && (
@@ -856,7 +854,7 @@ export default function ProjectDetailPage(props: {
                 ))}
                 <div ref={messagesEndRef} />
               </div>
-            </ScrollArea>
+            </div>
 
             {/* Message input */}
             <div className="border-t p-4">
@@ -946,29 +944,65 @@ export default function ProjectDetailPage(props: {
           {/* Team Tab */}
           <TabsContent value="team" className="flex-1 m-0 overflow-auto p-6">
             <div className="max-w-3xl mx-auto grid gap-3 md:grid-cols-2">
-              {project.company.employees.map((emp) => (
-                <Card key={emp.id}>
-                  <CardContent className="flex items-center gap-3 py-4">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary font-medium">
-                      {emp.name[0]}
-                    </div>
-                    <div className="flex-1">
-                      <div className="font-medium text-sm">{emp.name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {emp.role.title}
+              {project.company.employees.map((emp) => {
+                const assignedToEmp = (t: Task) =>
+                  t.assignments?.some(
+                    (a: { employee: { id: string } }) => a.employee.id === emp.id
+                  );
+                const currentTask =
+                  allTasks.find(
+                    (t) => assignedToEmp(t) && t.status === "in_progress"
+                  ) ??
+                  allTasks.find(
+                    (t) => assignedToEmp(t) && t.status === "assigned"
+                  );
+                return (
+                  <TooltipProvider key={emp.id}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Card className="cursor-default">
+                          <CardContent className="flex flex-col gap-3 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary font-medium">
+                          {emp.name[0]}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-sm">{emp.name}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {emp.role.title}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <div
+                            className={`h-2 w-2 rounded-full ${getEmployeeStatusColor(emp.status)}`}
+                          />
+                          <span className="text-xs text-muted-foreground">
+                            {t(`team.${emp.status}`)}
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <div
-                        className={`h-2 w-2 rounded-full ${getEmployeeStatusColor(emp.status)}`}
-                      />
-                      <span className="text-xs text-muted-foreground">
-                        {t(`team.${emp.status}`)}
-                      </span>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                      {currentTask && (
+                        <div className="text-xs text-muted-foreground border-t pt-2">
+                          <span className="font-medium text-foreground/80">
+                            {t("project.currentTask")}:
+                          </span>{" "}
+                          <span className="truncate block" title={currentTask.title}>
+                            {currentTask.title}
+                          </span>
+                        </div>
+                      )}
+                          </CardContent>
+                        </Card>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="max-w-xs">
+                        {currentTask
+                          ? `${t("project.currentTask")}: ${currentTask.title}`
+                          : t("project.noTasks")}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                );
+              })}
             </div>
           </TabsContent>
         </Tabs>

@@ -8,6 +8,7 @@ export async function GET() {
     await agentRegistry.syncToDatabase();
     const roles = await prisma.agentRole.findMany({
       orderBy: { name: "asc" },
+      include: { skills: { include: { skill: { select: { id: true, name: true } } } } },
     });
     return NextResponse.json(roles);
   } catch (error) {

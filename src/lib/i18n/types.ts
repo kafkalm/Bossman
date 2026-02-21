@@ -103,6 +103,10 @@ export type Messages = {
     idle: string;
     busy: string;
     offline: string;
+    employeeDetail: string;
+    systemPrompt: string;
+    skillsLabel: string;
+    goToChat: string;
   };
   project: {
     title: string;
@@ -125,17 +129,21 @@ export type Messages = {
     review: string;
     documentTab: string;
     codeTab: string;
+    workspaceTab: string;
     directoryTitle: string;
     codeDirectoryTitle: string;
+    workspaceDirectoryTitle: string;
     selectCodeFile: string;
     noCodeFiles: string;
     selectDoc: string;
+    selectWorkspaceFile: string;
     projectDoc: string;
     compiling: string;
     compilingHint: string;
     projectStarting: string;
     projectStartingHint: string;
     assignedTo: string;
+    currentTask: string;
     viewOutput: string;
     hideOutput: string;
     viewDoc: string;
@@ -198,10 +206,12 @@ export type Messages = {
     batchEditRoles: string;
     selectedCount: string;
     applySkillsToSelected: string;
+    clearSkills: string;
     applyModelToSelected: string;
     applyToSelected: string;
     batchSuccess: string;
     batchError: string;
+    clearSkillsConfirm: string;
   };
   analytics: {
     title: string;

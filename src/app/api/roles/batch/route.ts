@@ -5,6 +5,8 @@ import { prisma } from "@/lib/db";
 const BatchUpdateSchema = z.object({
   roleIds: z.array(z.string().min(1)).min(1).max(100),
   skillIds: z.array(z.string()).optional(),
+  /** "add" = merge with existing; "replace" = set to exactly skillIds (default) */
+  skillMode: z.enum(["add", "replace"]).optional(),
   modelConfig: z
     .object({
       provider: z.enum([
@@ -49,10 +51,21 @@ export async function POST(request: Request) {
         });
       }
       if (input.skillIds !== undefined) {
+        const mode = input.skillMode ?? "replace";
+        let finalSkillIds = input.skillIds;
+        if (mode === "add" && input.skillIds.length > 0) {
+          const existing = await prisma.agentRoleSkill.findMany({
+            where: { roleId },
+            select: { skillId: true },
+          });
+          const existingSet = new Set(existing.map((e) => e.skillId));
+          const toAdd = input.skillIds.filter((id) => !existingSet.has(id));
+          finalSkillIds = [...existing.map((e) => e.skillId), ...toAdd];
+        }
         await prisma.agentRoleSkill.deleteMany({ where: { roleId } });
-        if (input.skillIds.length > 0) {
+        if (finalSkillIds.length > 0) {
           await prisma.agentRoleSkill.createMany({
-            data: input.skillIds.map((skillId) => ({ roleId, skillId })),
+            data: finalSkillIds.map((skillId) => ({ roleId, skillId })),
           });
         }
       }
