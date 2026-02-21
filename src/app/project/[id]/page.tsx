@@ -315,6 +315,16 @@ export default function ProjectDetailPage(props: {
   }
 
   const allTasks = flattenTasks(project.tasks ?? []);
+  // 团队列表只显示为当前项目工作的员工：在本项目中有任务分配的 + CEO
+  const projectTeamEmployeeIds = new Set<string>(
+    allTasks.flatMap((t) => (t.assignments ?? []).map((a) => a.employee.id))
+  );
+  const ceo = project.company.employees.find((e) => e.role.name === "ceo");
+  if (ceo) projectTeamEmployeeIds.add(ceo.id);
+  const projectTeamEmployees = project.company.employees.filter((e) =>
+    projectTeamEmployeeIds.has(e.id)
+  );
+
   const completedTasks = allTasks.filter((t) => t.status === "completed");
   const progressPercent =
     allTasks.length > 0
@@ -944,7 +954,7 @@ export default function ProjectDetailPage(props: {
           {/* Team Tab */}
           <TabsContent value="team" className="flex-1 m-0 overflow-auto p-6">
             <div className="max-w-3xl mx-auto grid gap-3 md:grid-cols-2">
-              {project.company.employees.map((emp) => {
+              {projectTeamEmployees.map((emp) => {
                 const assignedToEmp = (t: Task) =>
                   t.assignments?.some(
                     (a: { employee: { id: string } }) => a.employee.id === emp.id

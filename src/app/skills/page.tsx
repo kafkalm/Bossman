@@ -14,6 +14,8 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { ExternalLink, FileText, Sparkles, Terminal } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const AGENT_SKILLS_REPO_URL = "https://agentskillsrepo.com";
 
@@ -184,9 +186,13 @@ function SkillCard({
                 <CardDescription>{skill.description}</CardDescription>
               )}
             </DialogHeader>
-            <pre className="flex-1 overflow-auto rounded bg-muted p-4 text-sm whitespace-pre-wrap font-sans">
-              {skill.content}
-            </pre>
+            <div className="flex-1 overflow-auto rounded bg-muted p-4 text-sm font-sans">
+              <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-4 prose-headings:mb-2 prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0 prose-blockquote:my-2 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted/80 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs [&_pre]:my-2 [&_pre]:bg-muted/80 [&_pre]:rounded [&_pre]:p-3 [&_pre]:text-xs [&_pre]:overflow-x-auto">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {skill.content}
+                </ReactMarkdown>
+              </div>
+            </div>
           </DialogContent>
         </Dialog>
       </CardContent>

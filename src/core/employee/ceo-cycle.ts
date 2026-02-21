@@ -53,7 +53,7 @@ export function getCeoPhase(project: Project): CeoPhase {
 }
 
 const CEO_RULES =
-  "You MUST use tools to take action. Do not just describe — actually do it. In one response you can and should call assign_task multiple times to assign multiple subtasks to different employees for parallel execution. Assign tasks using roleName (the role: in the team list). Only you decide when a task is done: use approve_task when satisfied, request_revision when not. When the project is ready for handover, set status to \"review\" (wait for Founder). Only the Founder can set the project to \"completed\" after acceptance.";
+  "You MUST use tools to take action. Do not just describe — actually do it. Before assigning tasks, decide which roles are actually needed for this project and involve as few employees as necessary — do not assign to every role by default; prefer consolidating work onto fewer people when one role can cover it. In one response you can and should call assign_task multiple times to assign multiple subtasks to the minimal set of involved employees for parallel execution. Assign tasks using roleName (the role: in the team list). Only you decide when a task is done: use approve_task when satisfied, request_revision when not. When the project is ready for handover, set status to \"review\" (wait for Founder). Only the Founder can set the project to \"completed\" after acceptance.";
 
 function buildPromptPreamble(
   project: Project,
@@ -86,16 +86,7 @@ function buildPromptNoTasks(
     buildPromptPreamble(project, snapshot, iteration, maxIterations) +
     `**Current phase: Project start — no tasks yet.**
 
-Analyze the project, break it into multiple subtasks, then call \`assign_task\` multiple times in this response — one per subtask, for all relevant team members, so they work concurrently. Start with the documentation phase. Assign to each relevant role in one go, e.g.:
-- Product Manager: Requirements, feature scope, user stories, PRD
-- UI Designer: Design direction, key page layouts, interaction patterns
-- Frontend Developer: Frontend architecture, tech stack, component structure
-- Backend Developer: System architecture, API design, database schema
-- QA Engineer: Testing strategy, quality criteria, acceptance criteria
-- Researcher: Market research, competitive analysis, technical feasibility
-- Ideation Specialist: Creative product ideas, innovation angles
-
-Take action now.`
+First decide which roles are actually needed for this project (involve as few employees as possible). Consider scope and complexity: a small project may need only 1–2 roles (e.g. PM + one developer); only add more roles when the work clearly requires them. Then break the project into subtasks and call \`assign_task\` only for the roles you decided to involve — one or more tasks per involved role so they work concurrently. Prefer one person handling related work when their role fits (e.g. one developer for both frontend and backend on a tiny app). Start with the documentation phase. Take action now.`
   );
 }
 
@@ -125,7 +116,7 @@ function buildPromptDocSavedReadyImpl(
     buildPromptPreamble(project, snapshot, iteration, maxIterations) +
     `**Current phase: Project document is saved; plan the implementation phase.**
 
-Break the project into multiple concrete implementation subtasks, then call \`assign_task\` multiple times in this response for all tasks that can run in parallel (e.g. frontend + backend + QA in one round) so multiple engineers work concurrently.
+Decide the minimal set of roles needed for implementation (involve as few employees as necessary). Then break the project into concrete implementation subtasks and call \`assign_task\` only for those roles — multiple tasks can go to the same role when appropriate (e.g. one developer for several related tickets). Assign in one response so involved engineers work concurrently.
 
 Take action now.`
   );
@@ -145,7 +136,7 @@ function buildPromptAllTasksCompleted(
     buildPromptPreamble(project, snapshot, iteration, maxIterations) +
     `**Current phase: All tasks are completed.**
 
-Analyze the Project Document and deliverables. If the project is not complete enough (missing scope, weak quality, or needs another iteration), call \`assign_task\` multiple times in this response to create and assign several new tasks for the next iteration so the team can work in parallel. If the project is complete and ready for Founder acceptance, use \`update_project_status\` to set the project to "review" with a summary. Do NOT set status to "completed" — only the Founder can mark the project completed after acceptance.${lastCycle}
+Analyze the Project Document and deliverables. If the project is not complete enough (missing scope, weak quality, or needs another iteration), decide the minimal set of roles needed for the next iteration, then call \`assign_task\` only for those roles so the team can work in parallel (involve as few employees as necessary). If the project is complete and ready for Founder acceptance, use \`update_project_status\` to set the project to "review" with a summary. Do NOT set status to "completed" — only the Founder can mark the project completed after acceptance.${lastCycle}
 
 Take action now.`
   );
@@ -177,7 +168,7 @@ function buildPromptHasActiveWork(
     buildPromptPreamble(project, snapshot, iteration, maxIterations) +
     `**Current phase: Some tasks are in progress, assigned, or pending.**
 
-Review the state. If any tasks are in review, handle them (approve_task or request_revision). If you need to assign more work or unblock progress, use the appropriate tools. Prefer calling \`assign_task\` multiple times in one response when adding several tasks.
+Review the state. If any tasks are in review, handle them (approve_task or request_revision). If you need to assign more work or unblock progress, involve only the minimal set of roles needed, then use the appropriate tools. Prefer calling \`assign_task\` multiple times in one response when adding several tasks.
 
 Take action now.`
   );
@@ -235,7 +226,7 @@ export function buildCeoTools(
     {
       name: "assign_task",
       description:
-        "Create and assign one task to a team member. Call this tool multiple times in the same response to assign several subtasks to different employees for concurrent execution (e.g. one assign_task per subtask). Task types: documentation, implementation, review, research, design, testing, etc.",
+        "Create and assign one task to a team member. Only assign to roles you have already decided to involve (minimal set needed for the project). Call this tool multiple times to assign several subtasks to the involved employees for concurrent execution. Task types: documentation, implementation, review, research, design, testing, etc.",
       parameters: z.object({
         roleName: z
           .enum(teamMembers as [string, ...string[]])

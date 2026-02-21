@@ -1,6 +1,6 @@
 /**
- * Agent 工作区：文件存储在 .bossman_workspace/{projectId}/ 下，不落 DB。
- * 支持创建/写入/读取文件，路径按 projectId / employeeId / path / title 组织。
+ * Agent 工作区：文件存储在 .bossman_workspace/{projectId}/{employeeId}/ 下，不落 DB。
+ * 同一项目下按员工区分目录，路径为 projectId / employeeId / path / title。
  */
 
 import fs from "fs/promises";
@@ -29,18 +29,18 @@ export function getProjectWorkspaceRoot(projectId: string): string {
 }
 
 /**
- * 计算某文件在工作区内的相对路径：files/{employeeId}/{path}/{title}
+ * 计算某文件在工作区内的相对路径：{employeeId}/{path}/{title}
  */
 export function getFileRelativePath(employeeId: string, pathDir: string | null, title: string): string {
   if (!employeeId || !title) return "";
   const parts = [employeeId];
   if (pathDir != null && pathDir.trim() !== "") parts.push(pathDir.trim());
   parts.push(title);
-  return path.join("files", ...parts);
+  return path.join(...parts);
 }
 
 /**
- * 写入文件到工作区。路径为 .bossman_workspace/{projectId}/files/{employeeId}/{path}/{title}
+ * 写入文件到工作区。路径为 .bossman_workspace/{projectId}/{employeeId}/{path}/{title}
  */
 export async function writeWorkspaceFile(
   projectId: string,
@@ -80,7 +80,7 @@ export async function readWorkspaceFile(
 }
 
 /**
- * 列出项目工作区 files/ 下的结构，用于 Agent 或 UI。
+ * 列出项目工作区下的结构（.bossman_workspace/{projectId}/{employeeId}/...），用于 Agent 或 UI。
  * 返回 { path: string, title: string, employeeId: string }[]，path 为相对路径。
  */
 export async function listWorkspaceFiles(projectId: string): Promise<
@@ -88,18 +88,17 @@ export async function listWorkspaceFiles(projectId: string): Promise<
 > {
   const root = getProjectWorkspaceRoot(projectId);
   if (!root) return [];
-  const filesDir = path.join(root, "files");
+  let entries: { name: string; isDirectory: () => boolean }[];
   try {
-    await fs.access(filesDir);
+    entries = await fs.readdir(root, { withFileTypes: true });
   } catch {
     return [];
   }
   const results: { relativePath: string; employeeId: string; pathDir: string; title: string }[] = [];
-  const empIds = await fs.readdir(filesDir, { withFileTypes: true });
-  for (const emp of empIds) {
+  for (const emp of entries) {
     if (!emp.isDirectory()) continue;
-    const empPath = path.join(filesDir, emp.name);
-    await collectFiles(empPath, path.join("files", emp.name), emp.name, "", results);
+    const empPath = path.join(root, emp.name);
+    await collectFiles(empPath, emp.name, emp.name, "", results);
   }
   return results;
 }

@@ -41,13 +41,8 @@ export function getAgentTools(): ToolDefinition[] {
     {
       name: "save_to_workspace",
       description:
-        "Save a file to your personal workspace (your folder in Document/Code tab). Use this frequently during work: save drafts, outlines, research notes, intermediate code, so your work is persisted and visible. Path is the directory in your workspace, e.g. 'docs', 'drafts', 'src', 'research'.",
+        "Save a file to your personal workspace (your folder in Document/Code tab). Use this frequently during work: save drafts, outlines, research notes, intermediate code, so your work is persisted and visible. Files are stored under the current task folder automatically.",
       parameters: z.object({
-        path: z
-          .string()
-          .describe(
-            "Directory path in your workspace, e.g. docs, drafts, src, research (no leading/trailing slash)"
-          ),
         title: z
           .string()
           .describe("Filename with extension, e.g. outline.md, notes.md"),
@@ -61,7 +56,7 @@ export function getAgentTools(): ToolDefinition[] {
     {
       name: "create_file",
       description:
-        "Create and submit a file deliverable to the project. Use for final code (e.g. .tsx, .py) or docs. Optional path organizes files under your folder (e.g. path 'src' + title 'Button.tsx'). Save intermediate work with save_to_workspace instead.",
+        "Create and submit a file deliverable to the project. Use for final code (e.g. .tsx, .py) or docs. Save intermediate work with save_to_workspace instead. Files are stored under the current task folder automatically.",
       parameters: z.object({
         title: z
           .string()
@@ -73,29 +68,23 @@ export function getAgentTools(): ToolDefinition[] {
           .describe(
             "Use 'code' for source code (ts, tsx, py, etc.); use 'document' for markdown/docs"
           ),
-        path: z
-          .string()
-          .optional()
-          .describe(
-            "Optional directory in your workspace, e.g. src, docs (no leading/trailing slash)"
-          ),
       }),
     },
     {
       name: "list_workspace_files",
       description:
-        "List files in the project workspace (.bossman_workspace/projectId). Returns relative paths you can pass to read_file.",
+        "List files in the project workspace (.bossman_workspace/projectId/employeeId/). Returns relative paths you can pass to read_file.",
       parameters: z.object({}),
     },
     {
       name: "read_file",
       description:
-        "Read a file from the project workspace. Use the relativePath returned by list_workspace_files (e.g. 'files/employeeId/docs/outline.md').",
+        "Read a file from the project workspace. Use the relativePath returned by list_workspace_files (e.g. 'employeeId/docs/outline.md').",
       parameters: z.object({
         relativePath: z
           .string()
           .describe(
-            "Path to the file relative to the project workspace, e.g. 'files/empId/docs/notes.md'"
+            "Path to the file relative to the project workspace, e.g. 'employeeId/docs/notes.md'"
           ),
       }),
     },
@@ -145,6 +134,8 @@ export async function executeTaskForEmployee(taskId: string): Promise<void> {
   });
 
   let taskOutput: string | null = null;
+  /** 是否调用了交付类工具（report_to_ceo / create_file / save_to_workspace）或用了 result.content 落盘；仅此时才进入 review */
+  let hadDeliverableTool = false;
 
   const createFileAndShortMessage = async (
     content: string,
@@ -200,25 +191,26 @@ export async function executeTaskForEmployee(taskId: string): Promise<void> {
     const reports: string[] = [];
     for (const tc of result.toolCalls) {
       if (tc.name === "report_to_ceo") {
+        hadDeliverableTool = true;
         const { report } = tc.args as { report?: string };
         const reportContent = typeof report === "string" ? report : "";
         reports.push(reportContent);
-        await createFileAndShortMessage(reportContent, task.title, "document");
+        await createFileAndShortMessage(reportContent, task.title, "document", task.id);
       } else if (tc.name === "create_file" || tc.name === "save_to_workspace") {
+        hadDeliverableTool = true;
         const args = tc.args as {
           title?: string;
           content?: string;
           fileType?: "document" | "code";
-          path?: string;
         };
         const title = args.title ?? "untitled";
         const content = sanitizeDocumentContent(args.content ?? "");
         const fileType =
           args.fileType ?? (tc.name === "save_to_workspace" ? "document" : "code");
-        const pathDir = args.path;
-        await createFileAndShortMessage(content, title, fileType, pathDir);
+        // 路径由代码指定：按任务 ID 存到 .bossman_workspace/{projectId}/{employeeId}/{taskId}/{title}
+        await createFileAndShortMessage(content, title, fileType, task.id);
         reports.push(
-          `[${employee.name}] 已保存${fileType === "code" ? "代码" : "文档"}${pathDir ? ` → ${pathDir}/` : ""}${title}`
+          `[${employee.name}] 已保存${fileType === "code" ? "代码" : "文档"} → ${title}`
         );
       } else if (tc.name === "list_workspace_files") {
         const list = await listWorkspaceFiles(task.projectId);
@@ -263,15 +255,18 @@ export async function executeTaskForEmployee(taskId: string): Promise<void> {
 
   if (!taskOutput && result.content) {
     taskOutput = sanitizeDocumentContent(result.content);
-    await createFileAndShortMessage(taskOutput, task.title);
+    await createFileAndShortMessage(taskOutput, task.title, "document", task.id);
+    hadDeliverableTool = true;
   }
 
-  // With output → review (CEO approves); no output → completed directly
+  // 有交付 → review；无交付 → 保持 assigned，留在队列让员工再次执行并真正交付
+  const statusToSet =
+    taskOutput != null && taskOutput !== "" && hadDeliverableTool ? "review" : "assigned";
   await prisma.task.update({
     where: { id: task.id },
     data: {
-      status: taskOutput != null && taskOutput !== "" ? "review" : "completed",
-      ...(taskOutput != null && taskOutput !== "" ? { output: taskOutput } : {}),
+      status: statusToSet,
+      ...(taskOutput != null && taskOutput !== "" && hadDeliverableTool ? { output: taskOutput } : {}),
     },
   });
 }
