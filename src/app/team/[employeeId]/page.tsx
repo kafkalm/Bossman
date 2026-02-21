@@ -188,6 +188,8 @@ function ChatPanel({
   onAddImages: (files: FileList) => void;
   onRemoveImage: (index: number) => void;
 }) {
+  const { t } = useTranslation();
+
   if (loading) {
     return (
       <div className="flex flex-1 items-center justify-center">

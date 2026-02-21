@@ -24,9 +24,13 @@ function getLanguageModel(config: ModelConfig) {
     }
 
     case "anthropic": {
-      const anthropic = createAnthropic({
-        apiKey: process.env.ANTHROPIC_API_KEY,
-      });
+      const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+      if (!anthropicApiKey?.trim()) {
+        throw new Error(
+          "ANTHROPIC_API_KEY is not set. Add it to your .env file (see Settings → LLM providers for the key URL)."
+        );
+      }
+      const anthropic = createAnthropic({ apiKey: anthropicApiKey });
       return anthropic(config.model);
     }
 

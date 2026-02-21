@@ -65,6 +65,7 @@ export default function DashboardPage() {
   const [projectName, setProjectName] = useState("");
   const [projectDesc, setProjectDesc] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
+  const [totalTokens, setTotalTokens] = useState<number | null>(null);
 
   const fetchCompany = async () => {
     try {
@@ -81,6 +82,18 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchCompany();
   }, []);
+
+  useEffect(() => {
+    if (!company?.id) return;
+    fetch(`/api/analytics/tokens?companyId=${company.id}&summaryOnly=true`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.total?.totalTokens != null) {
+          setTotalTokens(data.total.totalTokens);
+        }
+      })
+      .catch(() => {});
+  }, [company?.id]);
 
   const handleSetup = async () => {
     if (!setupName.trim()) return;
@@ -311,7 +324,13 @@ export default function DashboardPage() {
               <Coins className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">-</div>
+              <div className="text-2xl font-bold">
+                {totalTokens != null
+                  ? totalTokens.toLocaleString()
+                  : loading
+                    ? "…"
+                    : "0"}
+              </div>
               <p className="text-xs text-muted-foreground">
                 {t("dashboard.analyticsDetail")}
               </p>

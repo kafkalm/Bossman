@@ -41,7 +41,9 @@ import {
   Sparkles,
   Loader2,
   Settings,
+  Layers,
 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 
 const llmProviders = [
   { name: "OpenAI", envKey: "OPENAI_API_KEY", docsUrl: "https://platform.openai.com/api-keys" },
@@ -365,6 +367,20 @@ export default function SettingsPage() {
   const [editProvider, setEditProvider] = useState("");
   const [editModel, setEditModel] = useState("");
   const [saving, setSaving] = useState(false);
+  const [allSkillsList, setAllSkillsList] = useState<{ id: string; name: string; description: string | null }[]>([]);
+  const [editRoleSkillIds, setEditRoleSkillIds] = useState<Set<string>>(new Set());
+  const [loadingRoleSkills, setLoadingRoleSkills] = useState(false);
+  const [editSkillSearch, setEditSkillSearch] = useState("");
+
+  // Batch edit
+  const [selectedRoleIds, setSelectedRoleIds] = useState<Set<string>>(new Set());
+  const [batchEditOpen, setBatchEditOpen] = useState(false);
+  const [batchSkillIds, setBatchSkillIds] = useState<Set<string>>(new Set());
+  const [batchProvider, setBatchProvider] = useState("");
+  const [batchModel, setBatchModel] = useState("");
+  const [batchSaving, setBatchSaving] = useState(false);
+  const [batchAllSkills, setBatchAllSkills] = useState<{ id: string; name: string; description: string | null }[]>([]);
+  const [batchSkillSearch, setBatchSkillSearch] = useState("");
 
   // AI assist
   const createAssist = usePromptAssist();
@@ -429,7 +445,15 @@ export default function SettingsPage() {
     setEditProvider(config.provider ?? "openai");
     setEditModel(config.model ?? "");
     editAssist.reset();
-    // Load existing or fetch capabilities
+    setLoadingRoleSkills(true);
+    Promise.all([
+      fetch("/api/skills").then((r) => (r.ok ? r.json() : [])),
+      fetch(`/api/roles/${role.id}/skills`).then((r) => (r.ok ? r.json() : { skills: [] })),
+    ]).then(([skills, { skills: roleSkills }]) => {
+      setAllSkillsList(skills);
+      setEditRoleSkillIds(new Set((roleSkills as { id: string }[]).map((s) => s.id)));
+      setLoadingRoleSkills(false);
+    }).catch(() => setLoadingRoleSkills(false));
     if (config.inputModalities) {
       editCaps.setCaps({ inputModalities: config.inputModalities, outputModalities: config.outputModalities ?? ["text"] });
     } else {
@@ -461,6 +485,11 @@ export default function SettingsPage() {
         }),
       });
       if (res.ok) {
+        await fetch(`/api/roles/${editRole.id}/skills`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ skillIds: Array.from(editRoleSkillIds) }),
+        });
         setEditRole(null);
         fetchRoles();
       } else {
@@ -469,6 +498,53 @@ export default function SettingsPage() {
       }
     } finally {
       setSaving(false);
+    }
+  };
+
+  const toggleRoleSelection = (roleId: string) => {
+    setSelectedRoleIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(roleId)) next.delete(roleId);
+      else next.add(roleId);
+      return next;
+    });
+  };
+
+  const selectAllRoles = (checked: boolean) => {
+    if (checked) setSelectedRoleIds(new Set(roles.map((r) => r.id)));
+    else setSelectedRoleIds(new Set());
+  };
+
+  const handleBatchApply = async () => {
+    const roleIds = Array.from(selectedRoleIds);
+    const payload: { roleIds: string[]; skillIds?: string[]; modelConfig?: Record<string, unknown> } = { roleIds };
+    if (batchSkillIds.size > 0) payload.skillIds = Array.from(batchSkillIds);
+    if (batchProvider && batchModel) {
+      payload.modelConfig = { provider: batchProvider, model: batchModel };
+    }
+    if (!payload.skillIds && !payload.modelConfig) return;
+    setBatchSaving(true);
+    try {
+      const res = await fetch("/api/roles/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        setBatchEditOpen(false);
+        setSelectedRoleIds(new Set());
+        setBatchSkillIds(new Set());
+        setBatchProvider("");
+        setBatchModel("");
+        fetchRoles();
+        // toast or brief message - use alert for now or a simple state
+        alert(t("settings.batchSuccess"));
+      } else {
+        const err = await res.json();
+        alert(err.error || t("settings.batchError"));
+      }
+    } finally {
+      setBatchSaving(false);
     }
   };
 
@@ -655,19 +731,36 @@ export default function SettingsPage() {
                     {t("settings.clickToEdit")}
                   </CardDescription>
                 </div>
-                <Dialog
-                  open={createOpen}
-                  onOpenChange={(open) => {
-                    setCreateOpen(open);
-                    if (!open) createAssist.reset();
-                  }}
-                >
-                  <DialogTrigger asChild>
-                    <Button size="sm">
-                      <Plus className="h-4 w-4 mr-1" />
-                      {t("settings.customRole")}
-                    </Button>
-                  </DialogTrigger>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={selectedRoleIds.size === 0}
+                    onClick={() => {
+                      setBatchEditOpen(true);
+                      fetch("/api/skills")
+                        .then((r) => (r.ok ? r.json() : []))
+                        .then(setBatchAllSkills)
+                        .catch(() => setBatchAllSkills([]));
+                    }}
+                  >
+                    <Layers className="h-4 w-4 mr-1" />
+                    {t("settings.batchEdit")}
+                    {selectedRoleIds.size > 0 && ` (${selectedRoleIds.size})`}
+                  </Button>
+                  <Dialog
+                    open={createOpen}
+                    onOpenChange={(open) => {
+                      setCreateOpen(open);
+                      if (!open) createAssist.reset();
+                    }}
+                  >
+                    <DialogTrigger asChild>
+                      <Button size="sm">
+                        <Plus className="h-4 w-4 mr-1" />
+                        {t("settings.customRole")}
+                      </Button>
+                    </DialogTrigger>
                   <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
                       <DialogTitle>{t("settings.createCustomRole")}</DialogTitle>
@@ -767,6 +860,7 @@ export default function SettingsPage() {
                     </div>
                   </DialogContent>
                 </Dialog>
+                </div>
               </CardHeader>
               <CardContent>
                 {loadingRoles ? (
@@ -775,6 +869,16 @@ export default function SettingsPage() {
                   </div>
                 ) : (
                   <div className="space-y-3">
+                    <div className="flex items-center gap-4 px-4 py-2 rounded-lg border bg-muted/30">
+                      <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          checked={roles.length > 0 && selectedRoleIds.size === roles.length}
+                          onCheckedChange={(c) => selectAllRoles(c === true)}
+                        />
+                        <span className="text-xs text-muted-foreground">{t("common.selectAll")}</span>
+                      </div>
+                      <div className="min-w-[140px]" />
+                    </div>
                     {roles.map((role) => {
                       const config = parseConfig(role.modelConfig);
                       return (
@@ -783,7 +887,16 @@ export default function SettingsPage() {
                           className="flex items-center gap-4 p-4 rounded-lg border hover:border-primary/50 transition-colors cursor-pointer"
                           onClick={() => openEdit(role)}
                         >
-                          <div className="shrink-0 min-w-[160px]">
+                          <div
+                            className="shrink-0 flex items-center gap-2"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Checkbox
+                              checked={selectedRoleIds.has(role.id)}
+                              onCheckedChange={() => toggleRoleSelection(role.id)}
+                            />
+                          </div>
+                          <div className="shrink-0 min-w-[140px]">
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-medium">{role.title}</span>
                               {role.isBuiltin && (
@@ -795,12 +908,12 @@ export default function SettingsPage() {
                                 </Badge>
                               )}
                             </div>
-                            <p className="text-xs text-muted-foreground mt-1">
+                            <p className="text-xs text-muted-foreground mt-1 mb-2">
                               {config.provider} / {config.model}
                             </p>
                             <ModalityBadges
-                              input={config.inputModalities}
-                              output={config.outputModalities}
+                              input={config.inputModalities ?? ["text"]}
+                              output={config.outputModalities ?? ["text"]}
                               t={t}
                             />
                           </div>
@@ -827,6 +940,7 @@ export default function SettingsPage() {
         onOpenChange={(open) => {
           if (!open) {
             setEditRole(null);
+            setEditSkillSearch("");
             editAssist.reset();
           }
         }}
@@ -839,7 +953,7 @@ export default function SettingsPage() {
               {editRole?.isBuiltin && ` · ${t("settings.builtinRole")}`}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 pt-2">
+          <div className="space-y-4 pt-2 min-w-0">
             <div>
               <label className="text-sm font-medium">{t("settings.displayName")}</label>
               <Input
@@ -917,6 +1031,60 @@ export default function SettingsPage() {
                 />
               </div>
             )}
+            <div>
+              <label className="text-sm font-medium flex items-center gap-2">
+                <Sparkles className="h-4 w-4" />
+                {t("skills.configureForRole")}
+              </label>
+              {loadingRoleSkills ? (
+                <p className="text-xs text-muted-foreground mt-1">{t("common.loading")}</p>
+              ) : allSkillsList.length === 0 ? (
+                <p className="text-xs text-muted-foreground mt-1">{t("skills.noSkills")}</p>
+              ) : (
+                <>
+                  <Input
+                    placeholder={t("common.search")}
+                    value={editSkillSearch}
+                    onChange={(e) => setEditSkillSearch(e.target.value)}
+                    className="mt-2 h-8 text-sm"
+                  />
+                  <div className="max-h-40 min-w-0 w-full overflow-auto rounded border mt-2 p-2 space-y-1.5">
+                  {allSkillsList
+                    .filter(
+                      (s) =>
+                        !editSkillSearch.trim() ||
+                        s.name.toLowerCase().includes(editSkillSearch.trim().toLowerCase()) ||
+                        (s.description ?? "").toLowerCase().includes(editSkillSearch.trim().toLowerCase())
+                    )
+                    .map((s) => (
+                    <label
+                      key={s.id}
+                      className="flex items-center gap-2 cursor-pointer rounded p-1.5 hover:bg-muted/50 min-w-0"
+                    >
+                      <Checkbox
+                        className="shrink-0"
+                        checked={editRoleSkillIds.has(s.id)}
+                        onCheckedChange={() => {
+                          setEditRoleSkillIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(s.id)) next.delete(s.id);
+                            else next.add(s.id);
+                            return next;
+                          });
+                        }}
+                      />
+                      <span className="text-sm font-medium shrink-0">{s.name}</span>
+                      {s.description && (
+                        <span className="text-xs text-muted-foreground truncate min-w-0">
+                          {s.description}
+                        </span>
+                      )}
+                    </label>
+                  ))}
+                  </div>
+                </>
+              )}
+            </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => setEditRole(null)}>
                 {t("common.cancel")}
@@ -926,6 +1094,120 @@ export default function SettingsPage() {
                 disabled={!editTitle || !editPrompt || saving}
               >
                 {saving ? t("settings.saving") : t("settings.saveChanges")}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Batch Edit Roles Dialog */}
+      <Dialog
+        open={batchEditOpen}
+        onOpenChange={(open) => {
+          setBatchEditOpen(open);
+          if (!open) setBatchSkillSearch("");
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("settings.batchEditRoles")}</DialogTitle>
+            <DialogDescription>
+              {t("settings.selectedCount").replace("{{count}}", String(selectedRoleIds.size))}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-2 min-w-0">
+            <div>
+              <label className="text-sm font-medium flex items-center gap-2">
+                <Sparkles className="h-4 w-4" />
+                {t("settings.applySkillsToSelected")}
+              </label>
+              {batchAllSkills.length === 0 ? (
+                <p className="text-xs text-muted-foreground mt-1">{t("skills.noSkills")}</p>
+              ) : (
+                <>
+                  <Input
+                    placeholder={t("common.search")}
+                    value={batchSkillSearch}
+                    onChange={(e) => setBatchSkillSearch(e.target.value)}
+                    className="mt-2 h-8 text-sm"
+                  />
+                  <div className="max-h-40 min-w-0 w-full overflow-auto rounded border mt-2 p-2 space-y-1.5">
+                  {batchAllSkills
+                    .filter(
+                      (s) =>
+                        !batchSkillSearch.trim() ||
+                        s.name.toLowerCase().includes(batchSkillSearch.trim().toLowerCase()) ||
+                        (s.description ?? "").toLowerCase().includes(batchSkillSearch.trim().toLowerCase())
+                    )
+                    .map((s) => (
+                    <label
+                      key={s.id}
+                      className="flex items-center gap-2 cursor-pointer rounded p-1.5 hover:bg-muted/50 min-w-0"
+                    >
+                      <Checkbox
+                        className="shrink-0"
+                        checked={batchSkillIds.has(s.id)}
+                        onCheckedChange={() => {
+                          setBatchSkillIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(s.id)) next.delete(s.id);
+                            else next.add(s.id);
+                            return next;
+                          });
+                        }}
+                      />
+                      <span className="text-sm font-medium shrink-0">{s.name}</span>
+                      {s.description && (
+                        <span className="text-xs text-muted-foreground truncate min-w-0">{s.description}</span>
+                      )}
+                    </label>
+                  ))}
+                  </div>
+                </>
+              )}
+            </div>
+            <div>
+              <label className="text-sm font-medium">{t("settings.applyModelToSelected")}</label>
+              <div className="grid grid-cols-2 gap-3 mt-2">
+                <div>
+                  <Select
+                    value={batchProvider ? batchProvider : "__none__"}
+                    onValueChange={(v) => setBatchProvider(v === "__none__" ? "" : v)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={t("settings.provider")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">—</SelectItem>
+                      {providerOptions.map((p) => (
+                        <SelectItem key={p.value} value={p.value}>
+                          {p.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Input
+                    value={batchModel}
+                    onChange={(e) => setBatchModel(e.target.value)}
+                    placeholder={t("settings.modelPlaceholder")}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setBatchEditOpen(false)}>
+                {t("common.cancel")}
+              </Button>
+              <Button
+                onClick={handleBatchApply}
+                disabled={
+                  batchSaving ||
+                  (batchSkillIds.size === 0 && (!batchProvider || !batchModel))
+                }
+              >
+                {batchSaving ? t("settings.saving") : t("settings.applyToSelected")}
               </Button>
             </div>
           </div>

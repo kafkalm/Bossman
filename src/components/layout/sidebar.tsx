@@ -10,12 +10,14 @@ import {
   LayoutDashboard,
   BarChart3,
   Settings,
+  Sparkles,
 } from "lucide-react";
 
 const navKeys = [
   { key: "nav.dashboard", href: "/", icon: LayoutDashboard },
   { key: "nav.projects", href: "/project", icon: FolderKanban },
   { key: "nav.team", href: "/team", icon: Users },
+  { key: "nav.skills", href: "/skills", icon: Sparkles },
   { key: "nav.analytics", href: "/analytics", icon: BarChart3 },
   { key: "nav.settings", href: "/settings", icon: Settings },
 ] as const;

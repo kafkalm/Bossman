@@ -6,11 +6,31 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const projectId = searchParams.get("projectId");
     const companyId = searchParams.get("companyId");
+    const summaryOnly = searchParams.get("summaryOnly") === "true";
 
     const where: Record<string, unknown> = {};
     if (projectId) where.projectId = projectId;
     if (companyId) {
       where.employee = { companyId };
+    }
+
+    if (summaryOnly && (companyId || projectId)) {
+      const agg = await prisma.tokenUsage.aggregate({
+        where,
+        _sum: { inputTokens: true, outputTokens: true },
+        _count: true,
+      });
+      const totalInput = agg._sum.inputTokens ?? 0;
+      const totalOutput = agg._sum.outputTokens ?? 0;
+      return NextResponse.json({
+        total: {
+          inputTokens: totalInput,
+          outputTokens: totalOutput,
+          totalTokens: totalInput + totalOutput,
+          cost: 0,
+          calls: agg._count,
+        },
+      });
     }
 
     const usages = await prisma.tokenUsage.findMany({

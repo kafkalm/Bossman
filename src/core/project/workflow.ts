@@ -658,17 +658,22 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
     const createFileAndShortMessage = async (
       content: string,
       title: string,
-      fileType: "document" | "code" = "document"
+      fileType: "document" | "code" = "document",
+      path?: string | null
     ): Promise<string> => {
+      const safeContent = typeof content === "string" ? content : "";
       const brief =
-        content.length > 80 ? content.slice(0, 80).trim() + "…" : content;
+        safeContent.length > 80
+          ? safeContent.slice(0, 80).trim() + "…"
+          : safeContent;
       const file = await prisma.projectFile.create({
         data: {
           projectId: task.projectId,
           employeeId: employee.id,
           taskId: task.id,
           title,
-          content,
+          path: path ?? null,
+          content: safeContent,
           brief,
           fileType,
         },
@@ -690,22 +695,25 @@ Respond to the Founder's message. If action is needed, use the appropriate tools
       const reports: string[] = [];
       for (const tc of result.toolCalls) {
         if (tc.name === "report_to_ceo") {
-          const { report } = tc.args as { report: string };
-          reports.push(report);
-          await createFileAndShortMessage(report, task.title, "document");
-        } else if (tc.name === "create_file") {
-          const {
-            title,
-            content,
-            fileType = "code",
-          } = tc.args as {
-            title: string;
-            content: string;
+          const { report } = tc.args as { report?: string };
+          const reportContent = typeof report === "string" ? report : "";
+          reports.push(reportContent);
+          await createFileAndShortMessage(reportContent, task.title, "document");
+        } else if (tc.name === "create_file" || tc.name === "save_to_workspace") {
+          const args = tc.args as {
+            title?: string;
+            content?: string;
             fileType?: "document" | "code";
+            path?: string;
           };
-          await createFileAndShortMessage(content, title, fileType);
+          const title = args.title ?? "untitled";
+          const content = args.content ?? "";
+          const fileType =
+            args.fileType ?? (tc.name === "save_to_workspace" ? "document" : "code");
+          const path = args.path;
+          await createFileAndShortMessage(content, title, fileType, path);
           reports.push(
-            `[${employee.name}] 已提交${fileType === "code" ? "代码" : "文档"}《${title}》`
+            `[${employee.name}] 已保存${fileType === "code" ? "代码" : "文档"}${path ? ` → ${path}/` : ""}${title}`
           );
         } else if (tc.name === "ask_colleague") {
           const { question, colleague_role } = tc.args as {
@@ -1057,9 +1065,29 @@ function getAgentTools(): ToolDefinition[] {
       }),
     },
     {
+      name: "save_to_workspace",
+      description:
+        "Save a file to your personal workspace (your folder in Document/Code tab). Use this frequently during work: save drafts, outlines, research notes, intermediate code, so your work is persisted and visible. Path is the directory in your workspace, e.g. 'docs', 'drafts', 'src', 'research'.",
+      parameters: z.object({
+        path: z
+          .string()
+          .describe(
+            "Directory path in your workspace, e.g. docs, drafts, src, research (no leading/trailing slash)"
+          ),
+        title: z
+          .string()
+          .describe("Filename with extension, e.g. outline.md, notes.md"),
+        content: z.string().describe("The file content"),
+        fileType: z
+          .enum(["document", "code"])
+          .default("document")
+          .describe("'document' for markdown/text, 'code' for source code"),
+      }),
+    },
+    {
       name: "create_file",
       description:
-        "Create and submit a file deliverable. Use this for code (e.g., .tsx, .ts, .py) or other file outputs. For implementation tasks, submit your code via this tool with fileType 'code' so it appears in the Code tab.",
+        "Create and submit a file deliverable to the project. Use for final code (e.g. .tsx, .py) or docs. Optional path organizes files under your folder (e.g. path 'src' + title 'Button.tsx'). Save intermediate work with save_to_workspace instead.",
       parameters: z.object({
         title: z
           .string()
@@ -1070,6 +1098,12 @@ function getAgentTools(): ToolDefinition[] {
           .default("code")
           .describe(
             "Use 'code' for source code (ts, tsx, py, etc.); use 'document' for markdown/docs"
+          ),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "Optional directory in your workspace, e.g. src, docs (no leading/trailing slash)"
           ),
       }),
     },

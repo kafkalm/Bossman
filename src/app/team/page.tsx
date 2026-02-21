@@ -20,7 +20,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, User, MessageCircle } from "lucide-react";
+import { Plus, User, MessageCircle, Sparkles } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useRouter } from "next/navigation";
 import { getEmployeeStatusColor } from "@/lib/constants";
 import { useTranslation } from "@/lib/i18n";
@@ -207,18 +208,21 @@ export default function TeamPage() {
                           {t("team.builtin")}
                         </Badge>
                       )}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-muted-foreground hover:text-primary"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          router.push(`/team/${emp.id}`);
-                        }}
-                        title={`和 ${emp.name} 对话`}
-                      >
-                        <MessageCircle className="h-4 w-4" />
-                      </Button>
+                      <div className="flex items-center gap-1">
+                        <EmployeeSkillsDialog employeeId={emp.id} employeeName={emp.name} t={t} />
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-muted-foreground hover:text-primary"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            router.push(`/team/${emp.id}`);
+                          }}
+                          title={`和 ${emp.name} 对话`}
+                        >
+                          <MessageCircle className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 </CardContent>
@@ -228,5 +232,125 @@ export default function TeamPage() {
         )}
       </div>
     </div>
+  );
+}
+
+interface SkillItem {
+  id: string;
+  name: string;
+  description: string | null;
+  source: string;
+}
+
+function EmployeeSkillsDialog({
+  employeeId,
+  employeeName,
+  t,
+}: {
+  employeeId: string;
+  employeeName: string;
+  t: (key: string) => string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [allSkills, setAllSkills] = useState<SkillItem[]>([]);
+  const [currentIds, setCurrentIds] = useState<Set<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    Promise.all([
+      fetch("/api/skills").then((r) => r.ok ? r.json() : []),
+      fetch(`/api/team/${employeeId}/skills`).then((r) => r.ok ? r.json() : { skills: [] }),
+    ])
+      .then(([skills, { skills: empSkills }]) => {
+        setAllSkills(skills);
+        const ids = new Set((empSkills as { id: string }[]).map((s) => s.id));
+        setCurrentIds(ids);
+        setSelectedIds(ids);
+      })
+      .finally(() => setLoading(false));
+  }, [open, employeeId]);
+
+  const toggle = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/team/${employeeId}/skills`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skillIds: Array.from(selectedIds) }),
+      });
+      if (res.ok) setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-muted-foreground hover:text-primary"
+          onClick={(e) => e.stopPropagation()}
+          title={t("skills.configureForEmployee")}
+        >
+          <Sparkles className="h-4 w-4" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent onClick={(e) => e.stopPropagation()}>
+        <DialogHeader>
+          <DialogTitle>{t("skills.configureForEmployee")}</DialogTitle>
+          <p className="text-sm text-muted-foreground">{employeeName}</p>
+        </DialogHeader>
+        <div className="py-4">
+          {loading ? (
+            <p className="text-muted-foreground">{t("common.loading")}</p>
+          ) : allSkills.length === 0 ? (
+            <p className="text-muted-foreground">{t("skills.noSkills")}</p>
+          ) : (
+            <div className="max-h-64 overflow-auto space-y-2">
+              {allSkills.map((s) => (
+                <label
+                  key={s.id}
+                  className="flex items-center gap-2 cursor-pointer rounded p-2 hover:bg-muted/50"
+                >
+                  <Checkbox
+                    checked={selectedIds.has(s.id)}
+                    onCheckedChange={() => toggle(s.id)}
+                  />
+                  <span className="font-medium">{s.name}</span>
+                  {s.description && (
+                    <span className="text-xs text-muted-foreground truncate">
+                      {s.description}
+                    </span>
+                  )}
+                </label>
+              ))}
+            </div>
+          )}
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              {t("common.cancel")}
+            </Button>
+            <Button onClick={save} disabled={loading || saving}>
+              {saving ? t("skills.saving") : t("skills.saveSkills")}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -73,6 +73,11 @@ function formatProjectContext(ctx: AgentExecutionContext): string {
     context += `## Your Current Task: ${ctx.taskTitle}\n${ctx.taskDescription}\n\n`;
   }
 
+  context += `## Your Workspace\n`;
+  context += `You have a personal workspace (your folder in the project's Document/Code tab). Save your work there as you go:\n`;
+  context += `- Use **save_to_workspace** to save drafts, outlines, research notes, and intermediate code. Call it frequently so work is persisted (e.g. path "drafts", title "outline.md").\n`;
+  context += `- Use **create_file** for final deliverables to submit to the CEO. Use optional path to organize (e.g. path "src", title "Button.tsx").\n`;
+  context += `- Organize with path: "docs", "drafts", "src", "research", etc. (no leading/trailing slash).\n\n`;
   context += `Please complete your assigned work. Be thorough and professional.`;
 
   return context;

@@ -21,40 +21,75 @@ model Company {
   updatedAt   DateTime   @updatedAt
   employees   Employee[]
   projects    Project[]
+  skills      Skill[]
+}
+
+// ─── Skill (market or custom, attachable to employees and roles) ──────────────
+
+model Skill {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  content     String   // markdown or text: skill definition / instructions
+  source      String   @default("custom") // "market" | "custom"
+  companyId   String?  // null = market/global; set = company-uploaded
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  company     Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  employees   EmployeeSkill[]
+  roles       AgentRoleSkill[]
 }
 
 // ─── Agent Role (template) ───────────────────────────────────────────────────
 
 model AgentRole {
-  id           String     @id @default(cuid())
-  name         String     @unique // e.g. "ceo", "frontend-dev"
+  id           String           @id @default(cuid())
+  name         String           @unique // e.g. "ceo", "frontend-dev"
   title        String // e.g. "CEO", "Frontend Developer"
   systemPrompt String
   modelConfig  String // JSON string: { provider, model, temperature, ... }
   capabilities String? // JSON string: available tools/capabilities
-  isBuiltin    Boolean    @default(false)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  isBuiltin    Boolean          @default(false)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
   employees    Employee[]
+  skills       AgentRoleSkill[]
 }
 
 // ─── Employee (Agent instance in a company) ──────────────────────────────────
 
 model Employee {
-  id              String        @id @default(cuid())
+  id              String          @id @default(cuid())
   companyId       String
   roleId          String
   name            String
-  status          String        @default("idle") // idle, busy, offline
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  company         Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  role            AgentRole     @relation(fields: [roleId], references: [id])
+  status          String          @default("idle") // idle, busy, offline
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  company         Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role            AgentRole       @relation(fields: [roleId], references: [id])
   assignments     TaskAssignment[]
-  messages        Message[]     @relation("SenderMessages")
+  messages        Message[]       @relation("SenderMessages")
   projectFiles    ProjectFile[]
   tokenUsages     TokenUsage[]
   directMessages  DirectMessage[]
+  skills          EmployeeSkill[]
+}
+
+model EmployeeSkill {
+  employeeId String
+  skillId    String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  skill      Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  @@id([employeeId, skillId])
+}
+
+model AgentRoleSkill {
+  roleId   String
+  skillId  String
+  role     AgentRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  skill    Skill     @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  @@id([roleId, skillId])
 }
 
 // ─── Project ─────────────────────────────────────────────────────────────────
@@ -82,7 +117,8 @@ model ProjectFile {
   projectId  String
   employeeId String
   taskId     String?  // optional: which task this came from
-  title      String   // e.g. "需求文档", "PRD", "Button.tsx"
+  title      String   // filename or "path/filename", e.g. "PRD.md", "src/Button.tsx"
+  path       String?  // optional dir path in workspace, e.g. "docs", "src"
   content    String   // markdown or source code
   brief      String?  // short summary for chat preview
   fileType   String   @default("document") // "document" | "code"

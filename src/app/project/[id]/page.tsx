@@ -77,6 +77,7 @@ interface Message {
 interface ProjectFile {
   id: string;
   title: string;
+  path?: string | null;
   content: string;
   brief: string | null;
   fileType?: string;
@@ -133,12 +134,10 @@ const statusVariant: Record<string, "default" | "secondary" | "destructive" | "o
   failed: "destructive",
 };
 
-export default function ProjectDetailPage({
-  params,
-}: {
+export default function ProjectDetailPage(props: {
   params: Promise<{ id: string }>;
 }) {
-  const { id } = use(params);
+  const { id } = use(props.params);
   const { t } = useTranslation();
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
@@ -440,13 +439,13 @@ export default function ProjectDetailPage({
             <div className="flex flex-1 min-h-0">
               {/* Left: document tree */}
               <aside
-                className="shrink-0 border-r bg-muted/30 flex flex-col"
+                className="shrink-0 border-r bg-muted/30 flex flex-col min-h-0"
                 style={{ width: docTreeWidth }}
               >
-                <div className="px-3 py-2 border-b text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                <div className="px-3 py-2 border-b text-xs font-medium text-muted-foreground uppercase tracking-wider shrink-0">
                   {t("project.directoryTitle")}
                 </div>
-                <ScrollArea className="flex-1 py-2">
+                <div className="flex-1 min-h-0 overflow-y-auto py-2">
                   <div className="px-1 space-y-0.5">
                     {/* Top-level: compiled project document */}
                     {hasDocument && (
@@ -504,29 +503,53 @@ export default function ProjectDetailPage({
                                 </button>
                                 {isExpanded && (
                                   <div className="ml-5 pl-2 border-l border-muted space-y-0.5">
-                                    {files.map((file) => (
-                                      <button
-                                        key={file.id}
-                                        type="button"
-                                        id={file.id}
-                                        onClick={() => {
-                                          setSelectedProjectDoc(false);
-                                          setSelectedFileId(file.id);
-                                        }}
-                                        className={`w-full flex items-center gap-2 py-1 px-2 rounded text-left text-sm transition-colors ${
-                                          selectedFileId === file.id
-                                            ? "bg-primary text-primary-foreground"
-                                            : "hover:bg-muted"
-                                        }`}
-                                      >
-                                        <FileText className="h-3.5 w-3.5 shrink-0 opacity-80" />
-                                        <span className="truncate">
-                                          {file.title.endsWith(".md")
-                                            ? file.title
-                                            : `${file.title}.md`}
-                                        </span>
-                                      </button>
-                                    ))}
+                                    {(() => {
+                                      const byPath = files.reduce<
+                                        Record<string, ProjectFile[]>
+                                      >((acc, f) => {
+                                        const p = f.path ?? "";
+                                        if (!acc[p]) acc[p] = [];
+                                        acc[p].push(f);
+                                        return acc;
+                                      }, {});
+                                      const paths = Object.keys(byPath).sort();
+                                      return paths.map((pathKey) => (
+                                        <div key={pathKey || "_root"} className="space-y-0.5">
+                                          {pathKey && (
+                                            <div className="px-2 py-1 text-xs font-medium text-muted-foreground truncate">
+                                              {pathKey}/
+                                            </div>
+                                          )}
+                                          {byPath[pathKey]
+                                            .sort((a, b) =>
+                                              a.title.localeCompare(b.title)
+                                            )
+                                            .map((file) => (
+                                              <button
+                                                key={file.id}
+                                                type="button"
+                                                id={file.id}
+                                                onClick={() => {
+                                                  setSelectedProjectDoc(false);
+                                                  setSelectedFileId(file.id);
+                                                }}
+                                                className={`w-full flex items-center gap-2 py-1 px-2 rounded text-left text-sm transition-colors ${
+                                                  selectedFileId === file.id
+                                                    ? "bg-primary text-primary-foreground"
+                                                    : "hover:bg-muted"
+                                                }`}
+                                              >
+                                                <FileText className="h-3.5 w-3.5 shrink-0 opacity-80" />
+                                                <span className="truncate">
+                                                  {file.title.endsWith(".md")
+                                                    ? file.title
+                                                    : `${file.title}.md`}
+                                                </span>
+                                              </button>
+                                            ))}
+                                        </div>
+                                      ));
+                                    })()}
                                   </div>
                                 )}
                               </div>
@@ -535,7 +558,7 @@ export default function ProjectDetailPage({
                         );
                       })()}
                   </div>
-                </ScrollArea>
+                </div>
               </aside>
 
               {/* Resizer */}
@@ -551,20 +574,20 @@ export default function ProjectDetailPage({
               </div>
 
               {/* Right: document preview */}
-              <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+              <main className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
                 {selectedProjectDoc && hasDocument ? (
-                  <ScrollArea className="flex-1">
+                  <div className="flex-1 min-h-0 overflow-y-auto">
                     <div className="p-6 max-w-3xl">
                       <h1 className="text-xl font-semibold mb-4">
                         {t("project.projectDoc")}
                       </h1>
-                      <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-6 prose-headings:mb-3 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-pre:my-3 prose-blockquote:my-3 prose-table:my-3 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em] prose-pre:bg-muted prose-pre:rounded-lg prose-pre:p-4 prose-a:text-primary prose-img:rounded-lg prose-table:text-sm prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:bg-muted/50 prose-hr:my-6">
+                      <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-6 prose-headings:mb-3 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-blockquote:my-3 prose-table:my-3 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em] prose-a:text-primary prose-img:rounded-lg prose-table:text-sm prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:bg-muted/50 prose-hr:my-6 [&_pre]:my-3 [&_pre]:bg-muted [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:text-base [&_pre]:font-mono [&_pre]:leading-snug [&_pre]:overflow-x-auto [&_pre]:overflow-y-visible [&_pre]:whitespace-pre [&_pre]:min-w-0 [&_pre]:text-foreground">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {project.document!}
                         </ReactMarkdown>
                       </div>
                     </div>
-                  </ScrollArea>
+                  </div>
                 ) : selectedFileId ? (
                   (() => {
                     const file = docFiles.find(
@@ -572,7 +595,7 @@ export default function ProjectDetailPage({
                     );
                     if (!file) return null;
                     return (
-                      <ScrollArea className="flex-1">
+                      <div className="flex-1 min-h-0 overflow-y-auto">
                         <div className="p-6 max-w-3xl">
                           <div className="flex items-center gap-2 mb-4">
                             <span className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm text-primary">
@@ -587,13 +610,13 @@ export default function ProjectDetailPage({
                               </p>
                             </div>
                           </div>
-                          <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-6 prose-headings:mb-3 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-pre:my-3 prose-blockquote:my-3 prose-table:my-3 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-pre:bg-muted prose-pre:rounded-lg prose-pre:p-4 prose-a:text-primary prose-img:rounded-lg prose-table:text-sm prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:bg-muted/50 prose-hr:my-6">
+                          <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-6 prose-headings:mb-3 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-blockquote:my-3 prose-table:my-3 prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-a:text-primary prose-img:rounded-lg prose-table:text-sm prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-th:bg-muted/50 prose-hr:my-6 [&_pre]:my-3 [&_pre]:bg-muted [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:text-base [&_pre]:font-mono [&_pre]:leading-snug [&_pre]:overflow-x-auto [&_pre]:overflow-y-visible [&_pre]:whitespace-pre [&_pre]:min-w-0 [&_pre]:text-foreground">
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>
                               {file.content}
                             </ReactMarkdown>
                           </div>
                         </div>
-                      </ScrollArea>
+                      </div>
                     );
                   })()
                 ) : !hasDocument && docFiles.length === 0 ? (
@@ -638,13 +661,13 @@ export default function ProjectDetailPage({
             <div className="flex flex-1 min-h-0">
               {/* Left: code tree */}
               <aside
-                className="shrink-0 border-r bg-muted/30 flex flex-col"
+                className="shrink-0 border-r bg-muted/30 flex flex-col min-h-0"
                 style={{ width: docTreeWidth }}
               >
-                <div className="px-3 py-2 border-b text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                <div className="px-3 py-2 border-b text-xs font-medium text-muted-foreground uppercase tracking-wider shrink-0">
                   {t("project.codeDirectoryTitle")}
                 </div>
-                <ScrollArea className="flex-1 py-2">
+                <div className="flex-1 min-h-0 overflow-y-auto py-2">
                   <div className="px-1 space-y-0.5">
                     {codeFiles.length > 0 ? (
                       (() => {
@@ -683,26 +706,50 @@ export default function ProjectDetailPage({
                                 </button>
                                 {isExpanded && (
                                   <div className="ml-5 pl-2 border-l border-muted space-y-0.5">
-                                    {files.map((file) => (
-                                      <button
-                                        key={file.id}
-                                        type="button"
-                                        id={file.id}
-                                        onClick={() => {
-                                          setSelectedCodeFileId(file.id);
-                                        }}
-                                        className={`w-full flex items-center gap-2 py-1 px-2 rounded text-left text-sm transition-colors ${
-                                          selectedCodeFileId === file.id
-                                            ? "bg-primary text-primary-foreground"
-                                            : "hover:bg-muted"
-                                        }`}
-                                      >
-                                        <Code2 className="h-3.5 w-3.5 shrink-0 opacity-80" />
-                                        <span className="truncate">
-                                          {file.title}
-                                        </span>
-                                      </button>
-                                    ))}
+                                    {(() => {
+                                      const byPath = files.reduce<
+                                        Record<string, ProjectFile[]>
+                                      >((acc, f) => {
+                                        const p = f.path ?? "";
+                                        if (!acc[p]) acc[p] = [];
+                                        acc[p].push(f);
+                                        return acc;
+                                      }, {});
+                                      const paths = Object.keys(byPath).sort();
+                                      return paths.map((pathKey) => (
+                                        <div key={pathKey || "_root"} className="space-y-0.5">
+                                          {pathKey && (
+                                            <div className="px-2 py-1 text-xs font-medium text-muted-foreground truncate">
+                                              {pathKey}/
+                                            </div>
+                                          )}
+                                          {byPath[pathKey]
+                                            .sort((a, b) =>
+                                              a.title.localeCompare(b.title)
+                                            )
+                                            .map((file) => (
+                                              <button
+                                                key={file.id}
+                                                type="button"
+                                                id={file.id}
+                                                onClick={() => {
+                                                  setSelectedCodeFileId(file.id);
+                                                }}
+                                                className={`w-full flex items-center gap-2 py-1 px-2 rounded text-left text-sm transition-colors ${
+                                                  selectedCodeFileId === file.id
+                                                    ? "bg-primary text-primary-foreground"
+                                                    : "hover:bg-muted"
+                                                }`}
+                                              >
+                                                <Code2 className="h-3.5 w-3.5 shrink-0 opacity-80" />
+                                                <span className="truncate">
+                                                  {file.title}
+                                                </span>
+                                              </button>
+                                            ))}
+                                        </div>
+                                      ));
+                                    })()}
                                   </div>
                                 )}
                               </div>
@@ -716,7 +763,7 @@ export default function ProjectDetailPage({
                       </div>
                     )}
                   </div>
-                </ScrollArea>
+                </div>
               </aside>
 
               {/* Resizer */}
@@ -732,7 +779,7 @@ export default function ProjectDetailPage({
               </div>
 
               {/* Right: code preview */}
-              <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+              <main className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
                 {selectedCodeFileId ? (
                   (() => {
                     const file = codeFiles.find(
@@ -740,7 +787,7 @@ export default function ProjectDetailPage({
                     );
                     if (!file) return null;
                     return (
-                      <ScrollArea className="flex-1">
+                      <div className="flex-1 min-h-0 overflow-y-auto">
                         <div className="p-6">
                           <div className="flex items-center gap-2 mb-4">
                             <span className="h-8 w-8 rounded-full bg-emerald-500/10 flex items-center justify-center text-sm text-emerald-600 dark:text-emerald-400">
@@ -759,7 +806,7 @@ export default function ProjectDetailPage({
                             <code>{file.content}</code>
                           </pre>
                         </div>
-                      </ScrollArea>
+                      </div>
                     );
                   })()
                 ) : (
@@ -1029,21 +1076,26 @@ function MessageBubble({
           }`}
         >
         {hasFileRef ? (
-          <div className="text-sm">
-            <p className={isFounder ? "text-white/90 line-clamp-2" : "text-muted-foreground line-clamp-2"}>
-              {meta.brief ?? message.content}
-            </p>
-            {onViewFile && (
-              <button
-                type="button"
-                onClick={() => onViewFile(meta.fileId!)}
-                className={`mt-2 inline-flex items-center gap-1 text-xs hover:underline ${isFounder ? "text-white/90 hover:text-white" : "text-primary"}`}
-              >
-                <ExternalLink className="h-3 w-3" />
-                {isCodeFile ? t("project.viewCode") : t("project.viewDoc")}
-              </button>
-            )}
-          </div>
+          (() => {
+            const fileId = meta?.fileId;
+            return (
+              <div className="text-sm">
+                <p className={isFounder ? "text-white/90 line-clamp-2" : "text-muted-foreground line-clamp-2"}>
+                  {meta?.brief ?? message.content}
+                </p>
+                {onViewFile && fileId && (
+                  <button
+                    type="button"
+                    onClick={() => onViewFile(fileId)}
+                    className={`mt-2 inline-flex items-center gap-1 text-xs hover:underline ${isFounder ? "text-white/90 hover:text-white" : "text-primary"}`}
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    {isCodeFile ? t("project.viewCode") : t("project.viewDoc")}
+                  </button>
+                )}
+              </div>
+            );
+          })()
         ) : (() => {
           const LONG_MSG = 250;
           const isLongDoc = message.content.length > LONG_MSG;
