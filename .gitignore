@@ -25,6 +25,9 @@
 *.pem
 .bossman_workspace
 
+# all dot-prefixed directories (local/tooling, never commit)
+.*/
+
 # debug
 npm-debug.log*
 .cursor
