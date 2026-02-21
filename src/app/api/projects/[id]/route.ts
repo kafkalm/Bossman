@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { projectManager } from "@/core/project";
+import { hydrateProjectFilesContent } from "@/core/workspace";
 
 export async function GET(
   _request: Request,
@@ -12,6 +13,7 @@ export async function GET(
     if (!project) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
+    await hydrateProjectFilesContent(project);
     const usages = await prisma.tokenUsage.aggregate({
       where: { projectId: id },
       _sum: { inputTokens: true, outputTokens: true },

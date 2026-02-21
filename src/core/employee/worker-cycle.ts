@@ -9,6 +9,11 @@ import { messageBus } from "@/core/communication/message-bus";
 import { projectManager } from "@/core/project/manager";
 import { sanitizeDocumentContent } from "@/lib/sanitize-document";
 import { employeeService } from "@/core/employee/service";
+import {
+  writeWorkspaceFile,
+  readWorkspaceFile,
+  listWorkspaceFiles,
+} from "@/core/workspace";
 import { retryTaskExecution } from "./retry";
 import type { ToolDefinition } from "@/core/llm/types";
 
@@ -77,6 +82,24 @@ export function getAgentTools(): ToolDefinition[] {
       }),
     },
     {
+      name: "list_workspace_files",
+      description:
+        "List files in the project workspace (.bossman_workspace/projectId). Returns relative paths you can pass to read_file.",
+      parameters: z.object({}),
+    },
+    {
+      name: "read_file",
+      description:
+        "Read a file from the project workspace. Use the relativePath returned by list_workspace_files (e.g. 'files/employeeId/docs/outline.md').",
+      parameters: z.object({
+        relativePath: z
+          .string()
+          .describe(
+            "Path to the file relative to the project workspace, e.g. 'files/empId/docs/notes.md'"
+          ),
+      }),
+    },
+    {
       name: "ask_colleague",
       description:
         "Ask a question to a colleague in another role. Use this when you need information from another team member.",
@@ -127,7 +150,7 @@ export async function executeTaskForEmployee(taskId: string): Promise<void> {
     content: string,
     title: string,
     fileType: "document" | "code" = "document",
-    path?: string | null
+    pathDir?: string | null
   ): Promise<string> => {
     const raw = typeof content === "string" ? content : "";
     const safeContent = sanitizeDocumentContent(raw);
@@ -135,14 +158,27 @@ export async function executeTaskForEmployee(taskId: string): Promise<void> {
       safeContent.length > 80
         ? safeContent.slice(0, 80).trim() + "…"
         : safeContent;
+    let contentToStore = safeContent;
+    try {
+      await writeWorkspaceFile(
+        task.projectId,
+        employee.id,
+        pathDir ?? null,
+        title,
+        safeContent
+      );
+      contentToStore = ""; // 不把内容存 DB，已写入 .bossman_workspace
+    } catch {
+      // 写入工作区失败时仍落 DB，保证不丢
+    }
     const file = await prisma.projectFile.create({
       data: {
         projectId: task.projectId,
         employeeId: employee.id,
         taskId: task.id,
         title,
-        path: path ?? null,
-        content: safeContent,
+        path: pathDir ?? null,
+        content: contentToStore,
         brief,
         fileType,
       },
@@ -179,11 +215,32 @@ export async function executeTaskForEmployee(taskId: string): Promise<void> {
         const content = sanitizeDocumentContent(args.content ?? "");
         const fileType =
           args.fileType ?? (tc.name === "save_to_workspace" ? "document" : "code");
-        const path = args.path;
-        await createFileAndShortMessage(content, title, fileType, path);
+        const pathDir = args.path;
+        await createFileAndShortMessage(content, title, fileType, pathDir);
         reports.push(
-          `[${employee.name}] 已保存${fileType === "code" ? "代码" : "文档"}${path ? ` → ${path}/` : ""}${title}`
+          `[${employee.name}] 已保存${fileType === "code" ? "代码" : "文档"}${pathDir ? ` → ${pathDir}/` : ""}${title}`
         );
+      } else if (tc.name === "list_workspace_files") {
+        const list = await listWorkspaceFiles(task.projectId);
+        const summary =
+          list.length === 0
+            ? "No files in workspace."
+            : list
+                .map(
+                  (f) =>
+                    `${f.relativePath} (${f.employeeId}: ${f.pathDir ? f.pathDir + "/" : ""}${f.title})`
+                )
+                .join("\n");
+        reports.push(`[Workspace files]\n${summary}`);
+      } else if (tc.name === "read_file") {
+        const args = tc.args as { relativePath?: string };
+        const relativePath = args.relativePath ?? "";
+        const content = await readWorkspaceFile(task.projectId, relativePath);
+        if (content != null) {
+          reports.push(`[Read file: ${relativePath}]\n${content}`);
+        } else {
+          reports.push(`[Read file: ${relativePath}] (not found or unreadable)`);
+        }
       } else if (tc.name === "ask_colleague") {
         const { question, colleague_role } = tc.args as {
           question: string;

@@ -23,6 +23,7 @@
 # misc
 .DS_Store
 *.pem
+.bossman_workspace
 
 # debug
 npm-debug.log*
