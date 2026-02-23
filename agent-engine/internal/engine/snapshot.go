@@ -9,7 +9,7 @@ import (
 )
 
 // buildProjectSnapshot builds the CEO prompt snapshot string
-func buildProjectSnapshot(ctx context.Context, deps *Deps, project *db.Project, tasks []db.TaskWithAssignment, employees []db.EmployeeWithRole) (string, error) {
+func buildProjectSnapshot(ctx context.Context, database *db.DB, project *db.Project, tasks []db.TaskWithAssignment, employees []db.EmployeeWithRole) (string, error) {
 	var lines []string
 
 	lines = append(lines, "## Team Members")
@@ -74,7 +74,7 @@ func buildProjectSnapshot(ctx context.Context, deps *Deps, project *db.Project, 
 	}
 
 	// Recent messages
-	recentMsgs, err := deps.DB.GetRecentProjectMessages(ctx, project.ID, 15)
+	recentMsgs, err := database.GetRecentProjectMessages(ctx, project.ID, 15)
 	if err != nil {
 		return "", fmt.Errorf("recent messages: %w", err)
 	}
@@ -89,7 +89,7 @@ func buildProjectSnapshot(ctx context.Context, deps *Deps, project *db.Project, 
 			case "agent":
 				if msg.SenderID != nil {
 					// Try to get sender name
-					name, title, err := deps.DB.GetSenderName(ctx, *msg.SenderID)
+					name, title, err := database.GetSenderName(ctx, *msg.SenderID)
 					if err == nil {
 						label = fmt.Sprintf("%s (%s)", name, title)
 					}

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/kafkalm/bossman/agent-engine/internal/agent"
 	"github.com/kafkalm/bossman/agent-engine/internal/api"
 	"github.com/kafkalm/bossman/agent-engine/internal/bus"
 	"github.com/kafkalm/bossman/agent-engine/internal/config"
@@ -30,24 +31,42 @@ func main() {
 	llmRegistry := llm.NewRegistry(cfg)
 	ws := workspace.New(cfg.WorkspaceDir)
 
-	deps := engine.NewDeps(database, msgBus, llmRegistry, ws)
-	scheduler := engine.NewScheduler(deps)
+	runtime := agent.New(database, llmRegistry)
+	svc := engine.NewService(database, msgBus, runtime, ws)
 
-	// Auto-resume any projects that were in_progress when the engine last stopped
-	resumeCtx := context.Background()
-	if projectIDs, err := database.GetInProgressProjectIDs(resumeCtx); err != nil {
+	ctx := context.Background()
+
+	// Load all employees, instantiate CEO/Worker, register, and start loops
+	employees, err := database.GetAllEmployeesWithRoles(ctx)
+	if err != nil {
+		log.Fatalf("failed to load employees: %v", err)
+	}
+	for _, emp := range employees {
+		var e engine.Employee
+		if emp.RoleName == "ceo" {
+			e = engine.NewCEO(emp, svc)
+		} else {
+			e = engine.NewWorker(emp, svc)
+		}
+		svc.Register(e)
+		go e.Loop(ctx)
+	}
+	log.Printf("started %d employee goroutines", len(employees))
+
+	// Trigger CEO for any project already in_progress
+	if projectIDs, err := database.GetInProgressProjectIDs(ctx); err != nil {
 		log.Printf("warning: could not load in-progress projects: %v", err)
 	} else {
 		for _, pid := range projectIDs {
-			if err := scheduler.StartProject(pid); err != nil {
-				log.Printf("warning: could not resume project %s: %v", pid, err)
+			if err := svc.StartProject(pid); err != nil {
+				log.Printf("warning: could not trigger project %s: %v", pid, err)
 			} else {
-				log.Printf("resumed in-progress project %s", pid)
+				log.Printf("triggered in-progress project %s", pid)
 			}
 		}
 	}
 
-	router := api.NewRouter(scheduler, msgBus)
+	router := api.NewRouter(svc, msgBus)
 
 	addr := ":" + cfg.Port
 	log.Printf("Go Agent Engine listening on %s", addr)

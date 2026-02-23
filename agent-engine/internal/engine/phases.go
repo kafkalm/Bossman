@@ -28,7 +28,6 @@ func GetCeoPhase(project *db.Project, tasks []db.TaskWithAssignment) CeoPhase {
 	hasReview := false
 	hasBlocked := false
 	allCompleted := true
-	allCompletedOrReviewOrBlocked := true
 
 	for _, t := range tasks {
 		if t.Status == "review" {
@@ -40,9 +39,6 @@ func GetCeoPhase(project *db.Project, tasks []db.TaskWithAssignment) CeoPhase {
 		if t.Status != "completed" {
 			allCompleted = false
 		}
-		if t.Status != "completed" && t.Status != "review" && t.Status != "blocked" {
-			allCompletedOrReviewOrBlocked = false
-		}
 	}
 
 	if hasReview {
@@ -52,11 +48,11 @@ func GetCeoPhase(project *db.Project, tasks []db.TaskWithAssignment) CeoPhase {
 		return PhaseSomeBlocked
 	}
 	if allCompleted {
+		hasDocument := project.Document != nil && strings.TrimSpace(*project.Document) != ""
+		if hasDocument {
+			return PhaseDocSavedReadyImpl
+		}
 		return PhaseAllTasksCompleted
-	}
-	hasDocument := project.Document != nil && strings.TrimSpace(*project.Document) != ""
-	if hasDocument && allCompletedOrReviewOrBlocked {
-		return PhaseDocSavedReadyImpl
 	}
 	return PhaseHasActiveWork
 }

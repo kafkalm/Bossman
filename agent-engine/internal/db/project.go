@@ -174,6 +174,17 @@ func (d *DB) GetInProgressProjectIDs(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
+// GetInProgressProjectIDsByCompany returns in-progress project IDs for a company
+func (d *DB) GetInProgressProjectIDsByCompany(ctx context.Context, companyID string) ([]string, error) {
+	var ids []string
+	if err := d.SelectContext(ctx, &ids,
+		`SELECT id FROM Project WHERE companyId = ? AND status = 'in_progress' ORDER BY updatedAt ASC`,
+		companyID); err != nil {
+		return nil, fmt.Errorf("GetInProgressProjectIDsByCompany: %w", err)
+	}
+	return ids, nil
+}
+
 // GetTodoQueue returns tasks assigned to an employee that are not yet complete (assigned or in_progress)
 func (d *DB) GetTodoQueue(ctx context.Context, employeeID, projectID string) ([]Task, error) {
 	const q = `
@@ -190,4 +201,22 @@ func (d *DB) GetTodoQueue(ctx context.Context, employeeID, projectID string) ([]
 		return nil, fmt.Errorf("GetTodoQueue: %w", err)
 	}
 	return tasks, nil
+}
+
+// GetNextTodoTask returns one task (any project) assigned to the employee that is not yet complete.
+// Returns (nil, "", sql.ErrNoRows) when the employee has no pending tasks.
+func (d *DB) GetNextTodoTask(ctx context.Context, employeeID string) (*Task, string, error) {
+	const q = `
+	SELECT t.id, t.projectId, t.parentId, t.title, t.description, t.status, t.priority, t.output, t.createdAt, t.updatedAt
+	FROM Task t
+	JOIN TaskAssignment ta ON ta.taskId = t.id
+	WHERE ta.employeeId = ? AND t.status IN ('assigned', 'in_progress')
+	ORDER BY t.priority DESC, t.createdAt ASC
+	LIMIT 1
+	`
+	var t Task
+	if err := d.GetContext(ctx, &t, q, employeeID); err != nil {
+		return nil, "", err
+	}
+	return &t, t.ProjectID, nil
 }

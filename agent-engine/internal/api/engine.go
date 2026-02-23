@@ -8,18 +8,17 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kafkalm/bossman/agent-engine/internal/bus"
-	"github.com/kafkalm/bossman/agent-engine/internal/engine"
 )
 
 type engineHandler struct {
-	scheduler *engine.Scheduler
-	bus       *bus.Bus
+	pool Pool
+	bus  *bus.Bus
 }
 
 // POST /engine/projects/:id/start
 func (h *engineHandler) startProject(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
-	if err := h.scheduler.StartProject(projectID); err != nil {
+	if err := h.pool.StartProject(projectID); err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -29,14 +28,14 @@ func (h *engineHandler) startProject(w http.ResponseWriter, r *http.Request) {
 // POST /engine/projects/:id/stop
 func (h *engineHandler) stopProject(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
-	h.scheduler.StopProject(projectID)
+	h.pool.StopProject(projectID)
 	jsonOK(w, map[string]interface{}{"ok": true})
 }
 
 // GET /engine/projects/:id/status
 func (h *engineHandler) projectStatus(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
-	running := h.scheduler.IsRunning(projectID)
+	running := h.pool.IsRunning(projectID)
 	jsonOK(w, map[string]interface{}{"running": running})
 }
 
@@ -52,7 +51,7 @@ func (h *engineHandler) founderMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.scheduler.SendFounderMessage(projectID, body.Content); err != nil {
+	if err := h.pool.SendFounderMessage(projectID, body.Content); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}

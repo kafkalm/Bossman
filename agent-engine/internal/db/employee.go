@@ -34,3 +34,23 @@ func (d *DB) SetEmployeeStatus(ctx context.Context, id, status string) error {
 	)
 	return err
 }
+
+// GetAllEmployeesWithRoles returns all employees with their role info
+func (d *DB) GetAllEmployeesWithRoles(ctx context.Context) ([]EmployeeWithRole, error) {
+	const q = `
+	SELECT
+		e.id, e.companyId, e.roleId, e.name, e.status, e.createdAt, e.updatedAt,
+		r.name  AS role_name,
+		r.title AS role_title,
+		r.systemPrompt AS role_systemPrompt,
+		r.modelConfig  AS role_modelConfig
+	FROM Employee e
+	JOIN AgentRole r ON r.id = e.roleId
+	ORDER BY e.companyId, e.id
+	`
+	var emps []EmployeeWithRole
+	if err := d.SelectContext(ctx, &emps, q); err != nil {
+		return nil, fmt.Errorf("GetAllEmployeesWithRoles: %w", err)
+	}
+	return emps, nil
+}

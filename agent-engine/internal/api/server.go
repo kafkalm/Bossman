@@ -6,11 +6,18 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 	"github.com/kafkalm/bossman/agent-engine/internal/bus"
-	"github.com/kafkalm/bossman/agent-engine/internal/engine"
 )
 
+// Pool is the engine interface used by the API (start/stop project, founder message, status)
+type Pool interface {
+	StartProject(projectID string) error
+	StopProject(projectID string)
+	IsRunning(projectID string) bool
+	SendFounderMessage(projectID, message string) error
+}
+
 // NewRouter creates the chi HTTP router for the Go engine
-func NewRouter(scheduler *engine.Scheduler, msgBus *bus.Bus) http.Handler {
+func NewRouter(pool Pool, msgBus *bus.Bus) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -24,8 +31,8 @@ func NewRouter(scheduler *engine.Scheduler, msgBus *bus.Bus) http.Handler {
 	}))
 
 	h := &engineHandler{
-		scheduler: scheduler,
-		bus:       msgBus,
+		pool: pool,
+		bus:  msgBus,
 	}
 
 	r.Get("/engine/health", healthHandler)

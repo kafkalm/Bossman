@@ -3,7 +3,10 @@ package engine
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"log"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -11,15 +14,129 @@ import (
 
 	"github.com/kafkalm/bossman/agent-engine/internal/agent"
 	"github.com/kafkalm/bossman/agent-engine/internal/bus"
+	"github.com/kafkalm/bossman/agent-engine/internal/db"
 	"github.com/kafkalm/bossman/agent-engine/internal/engine/tools"
 	"github.com/kafkalm/bossman/agent-engine/internal/llm"
 )
 
 const maxCommandOutputBytes = 8 * 1024 // 8KB
 
-// ExecuteTaskForEmployee runs the LLM for a worker task, processes tool calls, and sets task status
-func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) error {
-	task, err := deps.DB.GetTask(ctx, taskID)
+// ─── Worker ───────────────────────────────────────────────────────────────────
+
+const maxEmptyRounds = 3 // consecutive no-deliverable rounds before blocking a task
+
+// Worker is the rich model for a worker agent. It owns its loop and wakes on task assignments.
+type Worker struct {
+	id          string
+	name        string
+	svc         *Service
+	wake        chan struct{}
+	emptyRounds map[string]int // taskID → consecutive no-deliverable count
+}
+
+// NewWorker creates a new Worker employee.
+func NewWorker(emp db.EmployeeWithRole, svc *Service) *Worker {
+	return &Worker{
+		id:          emp.ID,
+		name:        emp.Name,
+		svc:         svc,
+		wake:        make(chan struct{}, 1),
+		emptyRounds: make(map[string]int),
+	}
+}
+
+// Loop is the main goroutine entry point for a Worker. Runs until ctx is cancelled.
+func (w *Worker) Loop(ctx context.Context) error {
+	w.workerLoop(ctx)
+	return nil
+}
+
+// Wake sends a non-blocking wake signal to this worker.
+func (w *Worker) Wake() {
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+}
+
+// workerLoop waits for wake signals or polls for assigned tasks on a ticker.
+func (w *Worker) workerLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-w.wake:
+			w.executeAllTasks(ctx)
+
+		case <-ticker.C:
+			w.executeAllTasks(ctx)
+		}
+	}
+}
+
+func (w *Worker) executeAllTasks(ctx context.Context) {
+	for {
+		task, projectID, err := w.svc.db.GetNextTodoTask(ctx, w.id)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				log.Printf("[Worker %s] GetNextTodoTask error: %v", w.name, err)
+			}
+			return
+		}
+		if task == nil {
+			return
+		}
+
+		w.executeTask(ctx, task, projectID)
+	}
+}
+
+func (w *Worker) executeTask(ctx context.Context, task *db.Task, projectID string) {
+	taskID := task.ID
+	taskTitle := task.Title
+
+	err := retryWithBackoff(ctx, func() error {
+		return w.executeForEmployee(ctx, taskID)
+	}, func(attempt int, retryErr error) {
+		_ = sendSystemMsg(ctx, w.svc.db, w.svc.bus, projectID, &taskID,
+			fmt.Sprintf("Task \"%s\" failed (attempt %d/3), retrying...", taskTitle, attempt))
+	})
+
+	if err != nil {
+		_ = w.svc.db.UpdateTaskStatus(ctx, taskID, "blocked")
+		_ = sendSystemMsg(ctx, w.svc.db, w.svc.bus, projectID, &taskID,
+			fmt.Sprintf("Task \"%s\" execution failed after 3 attempts: %v", taskTitle, err))
+		w.svc.TriggerCEOForProject(projectID)
+		return
+	}
+
+	// Check if the task was reset to "assigned" (no deliverable produced)
+	updated, err := w.svc.db.GetTask(ctx, taskID)
+	if err == nil && updated.Status == "assigned" {
+		w.emptyRounds[taskID]++
+		if w.emptyRounds[taskID] >= maxEmptyRounds {
+			_ = w.svc.db.UpdateTaskStatus(ctx, taskID, "blocked")
+			_ = sendSystemMsg(ctx, w.svc.db, w.svc.bus, projectID, &taskID,
+				fmt.Sprintf("Task \"%s\" blocked: no deliverable produced after %d attempts.", taskTitle, maxEmptyRounds))
+			delete(w.emptyRounds, taskID)
+		}
+	} else {
+		// Task progressed (review or other) — reset counter
+		delete(w.emptyRounds, taskID)
+	}
+
+	w.svc.TriggerCEOForProject(projectID)
+}
+
+// ─── Worker cycle logic ───────────────────────────────────────────────────────
+
+// executeForEmployee runs the LLM for a worker task, processes tool calls, and sets task status
+func (w *Worker) executeForEmployee(ctx context.Context, taskID string) error {
+	task, err := w.svc.db.GetTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("load task: %w", err)
 	}
@@ -31,20 +148,20 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 	employeeID := *task.AssigneeID
 
 	// Mark task in_progress
-	if err := deps.DB.UpdateTaskStatus(ctx, taskID, "in_progress"); err != nil {
+	if err := w.svc.db.UpdateTaskStatus(ctx, taskID, "in_progress"); err != nil {
 		return fmt.Errorf("update task in_progress: %w", err)
 	}
 
 	taskIDPtr := taskID
 
 	// Load all project employees for ask_colleague
-	employees, err := deps.DB.GetProjectEmployees(ctx, projectID)
+	employees, err := w.svc.db.GetProjectEmployees(ctx, projectID)
 	if err != nil {
 		return fmt.Errorf("load employees: %w", err)
 	}
 
 	// Run LLM
-	result, err := deps.Runtime.Run(ctx, agent.RunOptions{
+	result, err := w.svc.runtime.Run(ctx, agent.RunOptions{
 		EmployeeID: employeeID,
 		ProjectID:  projectID,
 		TaskID:     &taskIDPtr,
@@ -58,7 +175,7 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 	hadDeliverableTool := false
 
 	// Get project workspace root for execute_command
-	projectWorkspaceRoot, _ := deps.Workspace.ProjectRoot(projectID)
+	projectWorkspaceRoot, _ := w.svc.workspace.ProjectRoot(projectID)
 
 	// Process tool calls
 	if len(result.ToolCalls) > 0 {
@@ -68,7 +185,7 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 				hadDeliverableTool = true
 				report, _ := tc.Args["report"].(string)
 				reports = append(reports, report)
-				if err := createFileAndNotify(ctx, deps, projectID, employeeID, &taskIDPtr, task.Task.Title, report, "document"); err != nil {
+				if err := w.createFileAndNotify(ctx, projectID, employeeID, &taskIDPtr, task.Task.Title, report, "document"); err != nil {
 					return fmt.Errorf("report_to_ceo file: %w", err)
 				}
 
@@ -86,7 +203,7 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 				if ft, ok := tc.Args["fileType"].(string); ok && ft != "" {
 					fileType = ft
 				}
-				if err := createFileAndNotify(ctx, deps, projectID, employeeID, &taskIDPtr, title, content, fileType); err != nil {
+				if err := w.createFileAndNotify(ctx, projectID, employeeID, &taskIDPtr, title, content, fileType); err != nil {
 					return fmt.Errorf("%s file: %w", tc.Name, err)
 				}
 				label := "文档"
@@ -96,7 +213,7 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 				reports = append(reports, fmt.Sprintf("[%s] 已保存%s → %s", strOrEmpty(&task.Task.Title), label, title))
 
 			case "list_workspace_files":
-				entries, err := deps.Workspace.ListFiles(projectID)
+				entries, err := w.svc.workspace.ListFiles(projectID)
 				if err != nil || len(entries) == 0 {
 					reports = append(reports, "[Workspace files]\nNo files in workspace.")
 				} else {
@@ -110,7 +227,7 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 
 			case "read_file":
 				relativePath, _ := tc.Args["relativePath"].(string)
-				content, err := deps.Workspace.ReadFile(projectID, relativePath)
+				content, err := w.svc.workspace.ReadFile(projectID, relativePath)
 				if err != nil {
 					reports = append(reports, fmt.Sprintf("[Read file: %s] (not found or unreadable)", relativePath))
 				} else {
@@ -118,7 +235,6 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 				}
 
 			case "ask_colleague":
-				// Synchronous colleague call — go version of the fix
 				colleagueRole, _ := tc.Args["colleague_role"].(string)
 				question, _ := tc.Args["question"].(string)
 
@@ -128,7 +244,7 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 					break
 				}
 
-				colResult, err := deps.Runtime.Run(ctx, agent.RunOptions{
+				colResult, err := w.svc.runtime.Run(ctx, agent.RunOptions{
 					EmployeeID: colleague.ID,
 					ProjectID:  projectID,
 					AdditionalMessages: []llm.ChatMessage{
@@ -137,14 +253,13 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 				})
 				if err != nil || colResult.Content == "" {
 					reports = append(reports, fmt.Sprintf("[ask_colleague] %s did not respond", colleague.Name))
-					// Log to bus
 					senderID := employeeID
-					_ = sendAgentMsg(ctx, deps, projectID, &taskIDPtr, &senderID,
+					_ = sendAgentMsg(ctx, w.svc.db, w.svc.bus, projectID, &taskIDPtr, &senderID,
 						fmt.Sprintf("[%s asks %s]: %s", strOrEmpty(task.AssigneeName), colleagueRole, question), nil)
 				} else {
 					reports = append(reports, fmt.Sprintf("[%s replied]: %s", colleague.Name, colResult.Content))
 					colID := colleague.ID
-					_ = sendAgentMsg(ctx, deps, projectID, &taskIDPtr, &colID,
+					_ = sendAgentMsg(ctx, w.svc.db, w.svc.bus, projectID, &taskIDPtr, &colID,
 						fmt.Sprintf("[%s replied to %s]: %s", colleague.Name, strOrEmpty(task.AssigneeName), colResult.Content), nil)
 				}
 
@@ -162,8 +277,7 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 				} else {
 					reports = append(reports, fmt.Sprintf("[execute_command] Exit code: %d\nOutput:\n%s", exitCode, output))
 				}
-				// Notify the bus so frontend can see command ran
-				_ = sendSystemMsg(ctx, deps, projectID, &taskIDPtr,
+				_ = sendSystemMsg(ctx, w.svc.db, w.svc.bus, projectID, &taskIDPtr,
 					fmt.Sprintf("[%s] ran command: %s (exit %d)", strOrEmpty(task.AssigneeName), summarizeCommand(command), exitCode))
 			}
 		}
@@ -173,7 +287,7 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 	if !hadDeliverableTool && result.Content != "" {
 		hadDeliverableTool = true
 		reports = append(reports, result.Content)
-		if err := createFileAndNotify(ctx, deps, projectID, employeeID, &taskIDPtr, task.Task.Title, result.Content, "document"); err != nil {
+		if err := w.createFileAndNotify(ctx, projectID, employeeID, &taskIDPtr, task.Task.Title, result.Content, "document"); err != nil {
 			return fmt.Errorf("fallback file: %w", err)
 		}
 	}
@@ -181,12 +295,12 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 	// Update task status
 	taskOutput := strings.Join(reports, "\n\n---\n\n")
 	if taskOutput != "" && hadDeliverableTool {
-		if err := deps.DB.UpdateTaskOutput(ctx, taskID, "review", taskOutput); err != nil {
+		if err := w.svc.db.UpdateTaskOutput(ctx, taskID, "review", taskOutput); err != nil {
 			return fmt.Errorf("update task review: %w", err)
 		}
 	} else {
 		// No deliverable: keep assigned so worker loops again
-		if err := deps.DB.UpdateTaskStatus(ctx, taskID, "assigned"); err != nil {
+		if err := w.svc.db.UpdateTaskStatus(ctx, taskID, "assigned"); err != nil {
 			return fmt.Errorf("reset task assigned: %w", err)
 		}
 	}
@@ -195,7 +309,7 @@ func ExecuteTaskForEmployee(ctx context.Context, deps *Deps, taskID string) erro
 }
 
 // createFileAndNotify creates a ProjectFile record and sends bus event
-func createFileAndNotify(ctx context.Context, deps *Deps, projectID, employeeID string, taskID *string, title, content, fileType string) error {
+func (w *Worker) createFileAndNotify(ctx context.Context, projectID, employeeID string, taskID *string, title, content, fileType string) error {
 	brief := content
 	if len(brief) > 80 {
 		brief = brief[:80] + "…"
@@ -210,16 +324,15 @@ func createFileAndNotify(ctx context.Context, deps *Deps, projectID, employeeID 
 	var storedContent string
 	if taskIDForPath != "" {
 		pathDir := taskIDForPath
-		_, wsErr := deps.Workspace.WriteFile(projectID, employeeID, &pathDir, title, content)
+		_, wsErr := w.svc.workspace.WriteFile(projectID, employeeID, &pathDir, title, content)
 		if wsErr != nil {
-			// Store content in DB if workspace write fails
 			storedContent = content
 		}
 	} else {
 		storedContent = content
 	}
 
-	file, err := deps.DB.CreateProjectFile(ctx, projectID, employeeID, taskID, title, nil, storedContent, brief, fileType)
+	file, err := w.svc.db.CreateProjectFile(ctx, projectID, employeeID, taskID, title, nil, storedContent, brief, fileType)
 	if err != nil {
 		return err
 	}
@@ -230,7 +343,7 @@ func createFileAndNotify(ctx context.Context, deps *Deps, projectID, employeeID 
 	}
 
 	senderID := employeeID
-	deps.Bus.Publish(bus.BusMessage{
+	w.svc.bus.Publish(bus.BusMessage{
 		ID:          file.ID,
 		ProjectID:   projectID,
 		TaskID:      taskID,
@@ -252,7 +365,6 @@ func executeCommand(ctx context.Context, command, workdir, projectWorkspaceRoot 
 
 	cmd := exec.CommandContext(cmdCtx, "/bin/sh", "-c", command)
 
-	// Resolve workdir safely
 	if projectWorkspaceRoot != "" {
 		safeDir := projectWorkspaceRoot
 		if workdir != "" {
@@ -274,7 +386,6 @@ func executeCommand(ctx context.Context, command, workdir, projectWorkspaceRoot 
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
-			// Timeout or other error
 			output := outBuf.String()
 			if len(output) > maxCommandOutputBytes {
 				output = output[:maxCommandOutputBytes] + "\n... (output truncated)"

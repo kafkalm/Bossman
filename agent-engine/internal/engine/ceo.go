@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/kafkalm/bossman/agent-engine/internal/agent"
 	"github.com/kafkalm/bossman/agent-engine/internal/bus"
@@ -11,25 +13,157 @@ import (
 	"github.com/kafkalm/bossman/agent-engine/internal/llm"
 )
 
+const maxCeoIterations = 200
+
+// ─── CEO ─────────────────────────────────────────────────────────────────────
+
+// CEO is the rich model for a CEO agent. It owns its loop and is triggered by project IDs.
+type CEO struct {
+	id         string
+	companyID  string
+	name       string
+	iterations map[string]int // projectID → iteration count
+	svc        *Service
+	trigger    chan string
+}
+
+// NewCEO creates a new CEO employee.
+func NewCEO(emp db.EmployeeWithRole, svc *Service) *CEO {
+	return &CEO{
+		id:         emp.ID,
+		companyID:  emp.CompanyID,
+		name:       emp.Name,
+		iterations: make(map[string]int),
+		svc:        svc,
+		trigger:    make(chan string, 100),
+	}
+}
+
+// Loop is the main goroutine entry point for a CEO. Runs until ctx is cancelled.
+func (c *CEO) Loop(ctx context.Context) error {
+	c.ceoLoop(ctx)
+	return nil
+}
+
+// TriggerProject sends a non-blocking project trigger to this CEO.
+func (c *CEO) TriggerProject(projectID string) {
+	select {
+	case c.trigger <- projectID:
+	default:
+	}
+}
+
+// ceoLoop waits for project triggers or polls in-progress projects on a ticker.
+func (c *CEO) ceoLoop(ctx context.Context) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case projectID := <-c.trigger:
+			c.runOneCeoCycle(ctx, projectID)
+
+		case <-ticker.C:
+			projectIDs, err := c.svc.db.GetInProgressProjectIDsByCompany(ctx, c.companyID)
+			if err != nil {
+				continue
+			}
+			for _, projectID := range projectIDs {
+				c.runOneCeoCycle(ctx, projectID)
+				break // one project per tick to avoid starving others
+			}
+		}
+	}
+}
+
+func (c *CEO) runOneCeoCycle(ctx context.Context, projectID string) {
+	project, err := c.svc.db.GetProject(ctx, projectID)
+	if err != nil {
+		log.Printf("[CEO %s] load project error: %v", projectID, err)
+		return
+	}
+	if project.Status != "in_progress" {
+		return
+	}
+
+	founderMessage := c.svc.takeFounderMessage(projectID)
+	runState := &projectRunState{svc: c.svc, ceo: c, projectID: projectID}
+
+	iter := c.iterations[projectID]
+	if iter > maxCeoIterations-1 {
+		iter = maxCeoIterations - 1
+	}
+
+	result, err := c.runCycle(ctx, CeoCycleRequest{
+		RunState:       runState,
+		Iteration:      iter,
+		MaxIterations:  maxCeoIterations,
+		FounderMessage: founderMessage,
+	})
+	if err != nil {
+		log.Printf("[CEO %s] cycle error (iter %d): %v", projectID, c.iterations[projectID], err)
+		return
+	}
+
+	c.iterations[projectID]++
+
+	if result.ShouldStop {
+		c.svc.StopProject(projectID)
+		return
+	}
+
+	// Schedule a safety self-wake so the project doesn't hang if workers fail silently
+	if result.Skipped {
+		time.AfterFunc(30*time.Second, func() { c.TriggerProject(projectID) })
+		return
+	}
+
+	projectAfter, err := c.svc.db.GetProject(ctx, projectID)
+	if err == nil && (projectAfter.Status == "completed" || projectAfter.Status == "failed") {
+		return
+	}
+
+	tasks, _ := c.svc.db.GetTasksForProject(ctx, projectID)
+	if shouldSelfTrigger(result, tasks) {
+		c.TriggerProject(projectID)
+	}
+}
+
+// ─── CEO cycle logic ──────────────────────────────────────────────────────────
+
 // CeoCycleResult is the result of a single CEO cycle
 type CeoCycleResult struct {
 	ShouldStop          bool
+	Skipped             bool
 	AssignedEmployeeIDs []string
 	ApprovedCount       int
 	SavedDocument       bool
 }
 
-// RunCeoCycle executes one CEO management cycle:
+// CeoCycleRequest holds the per-call inputs for a single CEO management cycle.
+type CeoCycleRequest struct {
+	RunState       ProjectRunState
+	Iteration      int
+	MaxIterations  int
+	FounderMessage string
+}
+
+// runCycle executes one CEO management cycle:
 // load project → build snapshot → select phase → call LLM → process tool calls
-func RunCeoCycle(ctx context.Context, deps *Deps, run *ProjectRun, iteration, maxIterations int, founderMessage string) (*CeoCycleResult, error) {
+func (c *CEO) runCycle(ctx context.Context, req CeoCycleRequest) (*CeoCycleResult, error) {
+	projectID := req.RunState.ProjectID()
+
 	// Load project
-	project, err := deps.DB.GetProject(ctx, run.ProjectID)
+	project, err := c.svc.db.GetProject(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("load project: %w", err)
 	}
 
 	// Load employees
-	employees, err := deps.DB.GetProjectEmployees(ctx, run.ProjectID)
+	employees, err := c.svc.db.GetProjectEmployees(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("load employees: %w", err)
 	}
@@ -40,28 +174,28 @@ func RunCeoCycle(ctx context.Context, deps *Deps, run *ProjectRun, iteration, ma
 	}
 
 	// Load tasks
-	tasks, err := deps.DB.GetTasksForProject(ctx, run.ProjectID)
+	tasks, err := c.svc.db.GetTasksForProject(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("load tasks: %w", err)
 	}
 
 	// Build snapshot
-	snapshot, err := buildProjectSnapshot(ctx, deps, project, tasks, employees)
+	snapshot, err := buildProjectSnapshot(ctx, c.svc.db, project, tasks, employees)
 	if err != nil {
 		return nil, fmt.Errorf("build snapshot: %w", err)
 	}
 
 	// Determine phase and build prompt
 	var promptContent string
-	if founderMessage != "" {
-		promptContent = BuildFounderPrompt(founderMessage, snapshot)
+	if req.FounderMessage != "" {
+		promptContent = BuildFounderPrompt(req.FounderMessage, snapshot)
 	} else {
 		phase := GetCeoPhase(project, tasks)
 		// Smart skip: if has_active_work and all tasks are purely waiting, skip LLM call
-		if phase == PhaseHasActiveWork && AllTasksActiveOrInProgress(tasks) && founderMessage == "" {
-			return &CeoCycleResult{}, nil
+		if phase == PhaseHasActiveWork && AllTasksActiveOrInProgress(tasks) {
+			return &CeoCycleResult{Skipped: true}, nil
 		}
-		promptContent = BuildPromptForPhase(phase, project, snapshot, iteration, maxIterations)
+		promptContent = BuildPromptForPhase(phase, project, snapshot, req.Iteration, req.MaxIterations)
 	}
 
 	// Build team roles for CEO tools
@@ -75,9 +209,9 @@ func RunCeoCycle(ctx context.Context, deps *Deps, run *ProjectRun, iteration, ma
 	ceoTools := tools.BuildCeoTools(teamRoles)
 
 	// Call LLM
-	result, err := deps.Runtime.Run(ctx, agent.RunOptions{
+	result, err := c.svc.runtime.Run(ctx, agent.RunOptions{
 		EmployeeID:         ceo.ID,
-		ProjectID:          run.ProjectID,
+		ProjectID:          projectID,
 		Tools:              ceoTools,
 		AdditionalMessages: []llm.ChatMessage{{Role: "user", Content: promptContent}},
 	})
@@ -89,19 +223,19 @@ func RunCeoCycle(ctx context.Context, deps *Deps, run *ProjectRun, iteration, ma
 		return &CeoCycleResult{}, nil
 	}
 
-	return processCeoToolCalls(ctx, deps, run, project, employees, result.ToolCalls)
+	return c.processToolCalls(ctx, req.RunState, project, employees, result.ToolCalls)
 }
 
-// processCeoToolCalls handles all CEO tool invocations
-func processCeoToolCalls(
+// processToolCalls handles all CEO tool invocations
+func (c *CEO) processToolCalls(
 	ctx context.Context,
-	deps *Deps,
-	run *ProjectRun,
+	runState ProjectRunState,
 	project *db.Project,
 	employees []db.EmployeeWithRole,
 	toolCalls []llm.ToolCall,
 ) (*CeoCycleResult, error) {
 	cycleResult := &CeoCycleResult{}
+	projectID := runState.ProjectID()
 
 	// Process assign_task first (so workers can be woken immediately)
 	for _, tc := range toolCalls {
@@ -119,36 +253,27 @@ func processCeoToolCalls(
 
 		emp := findEmployeeByRole(employees, roleName)
 		if emp == nil {
-			_ = sendSystemMsg(ctx, deps, run.ProjectID, nil,
+			_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, nil,
 				fmt.Sprintf("⚠️ Could not assign task \"%s\" — no employee with role \"%s\" found.", taskTitle, roleName))
 			continue
 		}
 
-		task, err := deps.DB.CreateTask(ctx, run.ProjectID, taskTitle, taskDescription, priority)
+		task, err := c.svc.db.CreateTask(ctx, projectID, taskTitle, taskDescription, priority)
 		if err != nil {
 			return nil, fmt.Errorf("create task: %w", err)
 		}
 
-		if err := deps.DB.AssignTask(ctx, task.ID, emp.ID); err != nil {
+		if err := c.svc.db.AssignTask(ctx, task.ID, emp.ID); err != nil {
 			return nil, fmt.Errorf("assign task: %w", err)
 		}
 
-		_ = sendSystemMsg(ctx, deps, run.ProjectID, &task.ID,
+		_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, &task.ID,
 			fmt.Sprintf("Task \"%s\" has been assigned to %s (%s).", taskTitle, emp.Name, emp.RoleTitle),
 			map[string]interface{}{"taskId": task.ID, "employeeId": emp.ID})
 
 		cycleResult.AssignedEmployeeIDs = append(cycleResult.AssignedEmployeeIDs, emp.ID)
 
-		// Wake the worker goroutine
-		run.mu.RLock()
-		wake, ok := run.WakeSignals[emp.ID]
-		run.mu.RUnlock()
-		if ok {
-			select {
-			case wake <- struct{}{}:
-			default:
-			}
-		}
+		runState.WakeWorker(emp.ID)
 	}
 
 	// Process remaining tools
@@ -159,20 +284,20 @@ func processCeoToolCalls(
 
 		case "save_project_document":
 			document, _ := tc.Args["document"].(string)
-			if err := deps.DB.UpdateProjectDocument(ctx, run.ProjectID, document); err != nil {
+			if err := c.svc.db.UpdateProjectDocument(ctx, projectID, document); err != nil {
 				return nil, fmt.Errorf("save document: %w", err)
 			}
-			_ = sendSystemMsg(ctx, deps, run.ProjectID, nil,
+			_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, nil,
 				"📄 Project document has been compiled and saved. You can view it in the Document tab.")
 			cycleResult.SavedDocument = true
 
 		case "update_project_status":
 			status, _ := tc.Args["status"].(string)
 			summary, _ := tc.Args["summary"].(string)
-			if err := deps.DB.UpdateProjectStatus(ctx, run.ProjectID, status); err != nil {
+			if err := c.svc.db.UpdateProjectStatus(ctx, projectID, status); err != nil {
 				return nil, fmt.Errorf("update status: %w", err)
 			}
-			_ = sendSystemMsg(ctx, deps, run.ProjectID, nil,
+			_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, nil,
 				fmt.Sprintf("Project status updated to **%s**: %s", status, summary))
 			if status == "completed" || status == "failed" {
 				cycleResult.ShouldStop = true
@@ -180,52 +305,42 @@ func processCeoToolCalls(
 
 		case "send_message":
 			content, _ := tc.Args["content"].(string)
-			_ = sendSystemMsg(ctx, deps, run.ProjectID, nil, "[CEO] "+content)
+			_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, nil, "[CEO] "+content)
 
 		case "request_revision":
 			taskID, _ := tc.Args["taskId"].(string)
 			feedback, _ := tc.Args["feedback"].(string)
 
-			task, err := deps.DB.GetTask(ctx, taskID)
-			if err != nil || task.Task.ProjectID != run.ProjectID {
+			task, err := c.svc.db.GetTask(ctx, taskID)
+			if err != nil || task.Task.ProjectID != projectID {
 				break
 			}
 			if task.AssigneeID == nil {
 				break
 			}
 
-			if err := deps.DB.ClearTaskOutput(ctx, taskID); err != nil {
+			if err := c.svc.db.ClearTaskOutput(ctx, taskID); err != nil {
 				return nil, fmt.Errorf("clear task output: %w", err)
 			}
 
-			_ = sendSystemMsg(ctx, deps, run.ProjectID, &taskID,
+			_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, &taskID,
 				fmt.Sprintf("[CEO 要求修改] %s 的《%s》质量不达标，需根据反馈重新编写。",
 					strOrEmpty(task.AssigneeName), task.Title))
-			_ = sendSystemMsg(ctx, deps, run.ProjectID, &taskID,
+			_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, &taskID,
 				"[CEO 反馈 - 请按要求修改后重新提交]\n\n"+feedback)
 
 			cycleResult.AssignedEmployeeIDs = append(cycleResult.AssignedEmployeeIDs, *task.AssigneeID)
-
-			// Wake the worker
-			run.mu.RLock()
-			wake, ok := run.WakeSignals[*task.AssigneeID]
-			run.mu.RUnlock()
-			if ok {
-				select {
-				case wake <- struct{}{}:
-				default:
-				}
-			}
+			runState.WakeWorker(*task.AssigneeID)
 
 		case "approve_task":
 			taskID, _ := tc.Args["taskId"].(string)
 			comment, _ := tc.Args["comment"].(string)
 
-			task, err := deps.DB.GetTask(ctx, taskID)
-			if err != nil || task.Task.ProjectID != run.ProjectID {
+			task, err := c.svc.db.GetTask(ctx, taskID)
+			if err != nil || task.Task.ProjectID != projectID {
 				break
 			}
-			if err := deps.DB.UpdateTaskStatus(ctx, taskID, "completed"); err != nil {
+			if err := c.svc.db.UpdateTaskStatus(ctx, taskID, "completed"); err != nil {
 				return nil, fmt.Errorf("approve task: %w", err)
 			}
 			who := strOrEmpty(task.AssigneeName)
@@ -233,7 +348,7 @@ func processCeoToolCalls(
 			if comment != "" {
 				msg = fmt.Sprintf("[CEO 已通过] %s（%s）— %s", task.Title, who, comment)
 			}
-			_ = sendSystemMsg(ctx, deps, run.ProjectID, &taskID, msg)
+			_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, &taskID, msg)
 			cycleResult.ApprovedCount++
 
 		case "request_info":
@@ -246,9 +361,9 @@ func processCeoToolCalls(
 			}
 
 			err := retryWithBackoff(ctx, func() error {
-				infoResult, err := deps.Runtime.Run(ctx, agent.RunOptions{
+				infoResult, err := c.svc.runtime.Run(ctx, agent.RunOptions{
 					EmployeeID: emp.ID,
-					ProjectID:  run.ProjectID,
+					ProjectID:  projectID,
 					AdditionalMessages: []llm.ChatMessage{
 						{Role: "user", Content: fmt.Sprintf("[CEO asks]: %s", question)},
 					},
@@ -273,8 +388,8 @@ func processCeoToolCalls(
 					if len(title) > 40 {
 						title = title[:40] + "…"
 					}
-					file, err := deps.DB.CreateProjectFile(ctx,
-						run.ProjectID, emp.ID, nil,
+					file, err := c.svc.db.CreateProjectFile(ctx,
+						projectID, emp.ID, nil,
 						fmt.Sprintf("%s 回复：%s", emp.Name, title),
 						nil, infoResult.Content, brief, "document",
 					)
@@ -282,21 +397,21 @@ func processCeoToolCalls(
 						return err
 					}
 					senderID := emp.ID
-					_ = sendAgentMsg(ctx, deps, run.ProjectID, nil, &senderID,
+					_ = sendAgentMsg(ctx, c.svc.db, c.svc.bus, projectID, nil, &senderID,
 						fmt.Sprintf("[%s replies to CEO] %s → 查看文档", emp.Name, brief),
 						map[string]interface{}{"fileId": file.ID, "brief": brief, "fileType": "document"})
 				} else {
 					senderID := emp.ID
-					_ = sendAgentMsg(ctx, deps, run.ProjectID, nil, &senderID,
+					_ = sendAgentMsg(ctx, c.svc.db, c.svc.bus, projectID, nil, &senderID,
 						fmt.Sprintf("[%s replies to CEO]: %s", emp.Name, infoResult.Content), nil)
 				}
 				return nil
 			}, func(attempt int, err error) {
-				_ = sendSystemMsg(ctx, deps, run.ProjectID, nil,
+				_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, nil,
 					fmt.Sprintf("request_info from %s failed (attempt %d/3), retrying...", roleName, attempt))
 			})
 			if err != nil {
-				_ = sendSystemMsg(ctx, deps, run.ProjectID, nil,
+				_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, nil,
 					fmt.Sprintf("Request to %s failed: %v", emp.Name, err))
 			}
 		}
@@ -326,7 +441,7 @@ func shouldSelfTrigger(result *CeoCycleResult, tasks []db.TaskWithAssignment) bo
 	return false
 }
 
-// Helper: find employee by role name
+// findEmployeeByRole finds an employee by role name
 func findEmployeeByRole(employees []db.EmployeeWithRole, roleName string) *db.EmployeeWithRole {
 	for i := range employees {
 		if employees[i].RoleName == roleName {
@@ -353,16 +468,16 @@ func containsMarkdownHeaders(s string) bool {
 }
 
 // sendSystemMsg persists a system message and publishes to bus
-func sendSystemMsg(ctx context.Context, deps *Deps, projectID string, taskID *string, content string, metadata ...map[string]interface{}) error {
+func sendSystemMsg(ctx context.Context, database *db.DB, msgBus *bus.Bus, projectID string, taskID *string, content string, metadata ...map[string]interface{}) error {
 	var meta map[string]interface{}
 	if len(metadata) > 0 {
 		meta = metadata[0]
 	}
-	msg, err := deps.DB.CreateMessage(ctx, projectID, taskID, nil, "system", content, meta)
+	msg, err := database.CreateMessage(ctx, projectID, taskID, nil, "system", content, meta)
 	if err != nil {
 		return err
 	}
-	deps.Bus.Publish(bus.BusMessage{
+	msgBus.Publish(bus.BusMessage{
 		ID:          msg.ID,
 		ProjectID:   projectID,
 		TaskID:      taskID,
@@ -376,12 +491,12 @@ func sendSystemMsg(ctx context.Context, deps *Deps, projectID string, taskID *st
 }
 
 // sendAgentMsg persists an agent message and publishes to bus
-func sendAgentMsg(ctx context.Context, deps *Deps, projectID string, taskID *string, senderID *string, content string, metadata map[string]interface{}) error {
-	msg, err := deps.DB.CreateMessage(ctx, projectID, taskID, senderID, "agent", content, metadata)
+func sendAgentMsg(ctx context.Context, database *db.DB, msgBus *bus.Bus, projectID string, taskID *string, senderID *string, content string, metadata map[string]interface{}) error {
+	msg, err := database.CreateMessage(ctx, projectID, taskID, senderID, "agent", content, metadata)
 	if err != nil {
 		return err
 	}
-	deps.Bus.Publish(bus.BusMessage{
+	msgBus.Publish(bus.BusMessage{
 		ID:          msg.ID,
 		ProjectID:   projectID,
 		TaskID:      taskID,
