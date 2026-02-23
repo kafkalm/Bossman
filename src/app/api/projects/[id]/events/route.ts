@@ -1,54 +1,22 @@
-import { NextRequest } from "next/server";
-import { messageBus } from "@/core/communication/message-bus";
+// This route is superseded by the next.config.ts rewrite that proxies SSE
+// directly to the Go engine at http://localhost:8080/engine/projects/:id/events.
+// This file is kept as a fallback reference only and should not be reached
+// in normal operation.
+export const dynamic = "force-dynamic";
 
-/**
- * SSE endpoint for real-time project updates.
- * Emits "refresh" when new files or deliverables are added.
- */
 export async function GET(
-  request: NextRequest,
+  _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id: projectId } = await params;
+  const { id } = await params;
+  const goEngineURL = process.env.GO_ENGINE_URL ?? "http://localhost:8080";
 
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    start(controller) {
-      const send = (event: string, data?: object) => {
-        const chunk = data
-          ? `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
-          : `event: ${event}\ndata: {}\n\n`;
-        controller.enqueue(encoder.encode(chunk));
-      };
-
-      const unsubscribe = messageBus.subscribe(projectId, (message) => {
-        if (
-          message.messageType === "deliverable" ||
-          message.messageType === "status_update"
-        ) {
-          send("refresh", { type: message.messageType });
-        }
-      });
-
-      // Keep-alive ping every 25s
-      const keepAlive = setInterval(() => {
-        send("ping");
-      }, 25000);
-
-      // Cleanup on abort
-      request.signal.addEventListener(
-        "abort",
-        () => {
-          unsubscribe();
-          clearInterval(keepAlive);
-          controller.close();
-        },
-        { once: true }
-      );
-    },
+  // Fallback: manually stream from Go engine
+  const upstream = await fetch(`${goEngineURL}/engine/projects/${id}/events`, {
+    headers: { Accept: "text/event-stream" },
   });
 
-  return new Response(stream, {
+  return new Response(upstream.body, {
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",

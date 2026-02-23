@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { projectWorkflow } from "@/core/project";
+
+const GO_ENGINE_URL = process.env.GO_ENGINE_URL ?? "http://localhost:8080";
 
 export async function POST(
   _request: Request,
@@ -7,11 +8,14 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    // Start the project workflow (async - don't await completion)
-    projectWorkflow.startProject(id).catch((error) => {
-      console.error("Project workflow error:", error);
+    const res = await fetch(`${GO_ENGINE_URL}/engine/projects/${id}/start`, {
+      method: "POST",
     });
-    return NextResponse.json({ status: "started" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return NextResponse.json(body, { status: res.status });
+    }
+    return NextResponse.json(await res.json());
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to start project" },

@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:engine": "cd agent-engine && go run ./main.go",
+    "dev:all": "concurrently \"next dev\" \"cd agent-engine && go run ./main.go\"",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -45,6 +47,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/uuid": "^10.0.0",
+    "concurrently": "^9.2.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "shadcn": "^3.8.4",
