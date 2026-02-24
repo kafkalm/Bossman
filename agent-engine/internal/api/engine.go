@@ -10,6 +10,14 @@ import (
 	"github.com/kafkalm/bossman/agent-engine/internal/bus"
 )
 
+const (
+	eventRefresh = "refresh"
+	eventPing    = "ping"
+
+	busTypeDeliverable  = "deliverable"
+	busTypeStatusUpdate = "status_update"
+)
+
 type engineHandler struct {
 	pool Pool
 	bus  *bus.Bus
@@ -39,10 +47,20 @@ func (h *engineHandler) projectStatus(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"running": running})
 }
 
+// GET /engine/projects/:id/snapshot
+func (h *engineHandler) projectSnapshot(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	snapshot, err := h.pool.SnapshotProject(projectID)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	jsonOK(w, snapshot)
+}
+
 // POST /engine/projects/:id/message
 func (h *engineHandler) founderMessage(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
-
 	var body struct {
 		Content string `json:"content"`
 	}
@@ -50,7 +68,6 @@ func (h *engineHandler) founderMessage(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "content is required")
 		return
 	}
-
 	if err := h.pool.SendFounderMessage(projectID, body.Content); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
@@ -62,7 +79,6 @@ func (h *engineHandler) founderMessage(w http.ResponseWriter, r *http.Request) {
 func (h *engineHandler) events(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 
-	// SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
@@ -76,8 +92,6 @@ func (h *engineHandler) events(w http.ResponseWriter, r *http.Request) {
 
 	msgCh, unsub := h.bus.Subscribe(projectID)
 	defer unsub()
-
-	// Keep-alive ticker
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
 
@@ -94,17 +108,15 @@ func (h *engineHandler) events(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-
 		case msg, open := <-msgCh:
 			if !open {
 				return
 			}
-			if msg.MessageType == "deliverable" || msg.MessageType == "status_update" {
-				send("refresh", map[string]interface{}{"type": msg.MessageType})
+			if msg.MessageType == busTypeDeliverable || msg.MessageType == busTypeStatusUpdate {
+				send(eventRefresh, map[string]interface{}{"type": msg.MessageType})
 			}
-
 		case <-ticker.C:
-			send("ping", nil)
+			send(eventPing, nil)
 		}
 	}
 }

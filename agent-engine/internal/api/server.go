@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 	"github.com/kafkalm/bossman/agent-engine/internal/bus"
+	"github.com/kafkalm/bossman/agent-engine/internal/engine"
 )
 
 // Pool is the engine interface used by the API (start/stop project, founder message, status)
@@ -14,13 +15,13 @@ type Pool interface {
 	StopProject(projectID string)
 	IsRunning(projectID string) bool
 	SendFounderMessage(projectID, message string) error
+	SnapshotProject(projectID string) (*engine.ProjectSnapshot, error)
 }
 
-// NewRouter creates the chi HTTP router for the Go engine
+// NewRouter creates the chi HTTP router for the Go engine.
 func NewRouter(pool Pool, msgBus *bus.Bus) http.Handler {
 	r := chi.NewRouter()
 
-	// Middleware
 	r.Use(recoverer)
 	r.Use(logger)
 	r.Use(cors.Handler(cors.Options{
@@ -30,17 +31,14 @@ func NewRouter(pool Pool, msgBus *bus.Bus) http.Handler {
 		AllowCredentials: true,
 	}))
 
-	h := &engineHandler{
-		pool: pool,
-		bus:  msgBus,
-	}
+	h := &engineHandler{pool: pool, bus: msgBus}
 
 	r.Get("/engine/health", healthHandler)
-
 	r.Route("/engine/projects/{id}", func(r chi.Router) {
 		r.Post("/start", h.startProject)
 		r.Post("/stop", h.stopProject)
 		r.Get("/status", h.projectStatus)
+		r.Get("/snapshot", h.projectSnapshot)
 		r.Post("/message", h.founderMessage)
 		r.Get("/events", h.events)
 	})
