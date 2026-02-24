@@ -140,9 +140,9 @@ type TimelineLane = {
   lastActiveAt: number;
 };
 
-const TIMELINE_CARD_WIDTH = 300;
-const TIMELINE_CARD_HEIGHT = 116;
-const TIMELINE_ROW_MIN_HEIGHT = 144;
+const TIMELINE_CARD_WIDTH = 320;
+const TIMELINE_CARD_HEIGHT = 148;
+const TIMELINE_ROW_MIN_HEIGHT = 164;
 const TIMELINE_LANE_WIDTH = TIMELINE_CARD_WIDTH + 24;
 
 const statusIcons: Record<string, React.ReactNode> = {
@@ -534,6 +534,7 @@ export default function ProjectDetailPage(props: {
     timelineItems,
     taskAssigneeById
   );
+  const taskTitleById = buildTaskTitleMap(allTasks);
 
   const completedTasks = allTasks.filter(
     (t) => normalizeTaskStatus(t.status) === "done"
@@ -1211,11 +1212,11 @@ export default function ProjectDetailPage(props: {
                           style={{ minHeight: TIMELINE_ROW_MIN_HEIGHT }}
                         >
                           <div
-                            className="shrink-0 rounded-md border border-amber-400/80 dark:border-amber-700/80 bg-amber-100/95 dark:bg-amber-900/55 px-3 py-2 shadow-sm"
+                            className="shrink-0 flex flex-col items-center justify-center rounded-md border border-amber-400/80 dark:border-amber-700/80 bg-amber-100/95 dark:bg-amber-900/55 px-3 py-2 shadow-sm text-center"
                             style={{ width: TIMELINE_CARD_WIDTH, height: TIMELINE_CARD_HEIGHT }}
                           >
-                            <div className="text-sm font-medium truncate">{lane.name}</div>
-                            <div className="text-xs text-muted-foreground truncate">{lane.roleTitle}</div>
+                            <div className="text-sm font-medium truncate w-full">{lane.name}</div>
+                            <div className="text-xs text-muted-foreground truncate w-full">{lane.roleTitle}</div>
                           </div>
                         </div>
                       ))}
@@ -1254,30 +1255,31 @@ export default function ProjectDetailPage(props: {
                                         const eventTitle = formatTimelineEventTitle(event);
                                         const eventDetail = formatTimelineEventDetail(event);
                                         const eventTime = formatTimelineTimestamp(event.createdAt);
+                                        const taskTitle = event.taskId ? taskTitleById.get(event.taskId) ?? null : null;
                                         return (
                                           <div key={getTimelineEventKey(event)} className="flex items-center gap-2">
                                             {index > 0 && <TimelineConnector />}
                                             <Tooltip>
                                               <TooltipTrigger asChild>
                                                 <Card
-                                                  className="shrink-0 overflow-hidden border-blue-200/80 dark:border-blue-700/80 bg-blue-50/90 dark:bg-blue-950/40 shadow-sm"
+                                                  className="relative z-10 shrink-0 overflow-hidden border-blue-200/80 dark:border-blue-700/80 bg-blue-50/90 dark:bg-blue-950/40 shadow-sm"
                                                   style={{ width: TIMELINE_CARD_WIDTH, height: TIMELINE_CARD_HEIGHT }}
                                                 >
-                                                  <CardContent className="flex h-full flex-col items-center justify-center gap-1.5 p-3 text-center">
-                                                    <div className="text-sm font-semibold leading-5 line-clamp-1" title={eventTitle}>
+                                                  <CardContent className="flex h-full min-w-0 flex-col items-center justify-center gap-2 overflow-hidden p-3 text-center">
+                                                    <div
+                                                      className="min-h-[1.25rem] min-w-0 shrink-0 w-full text-sm font-semibold leading-5 line-clamp-1 break-words"
+                                                      title={eventTitle}
+                                                    >
                                                       {eventTitle}
                                                     </div>
-                                                    <div className="text-xs leading-4 text-slate-700/90 dark:text-slate-300/90 line-clamp-2" title={eventDetail}>
-                                                      {eventDetail}
+                                                    <div
+                                                      className="min-h-[2.5rem] min-w-0 shrink-0 w-full text-xs leading-4 text-slate-700/90 dark:text-slate-300/90 line-clamp-2 break-words"
+                                                      title={taskTitle ?? (event.taskId ? `任务: ${event.taskId}` : "项目级事件")}
+                                                    >
+                                                      {taskTitle ?? (event.taskId ? `任务: ${shortTaskId(event.taskId)}` : "项目级事件")}
                                                     </div>
-                                                    <div className="text-xs font-medium text-muted-foreground">{eventTime}</div>
-                                                    <div className="flex w-full items-center justify-center gap-1.5">
-                                                      <span className="max-w-[40%] truncate text-[10px] text-muted-foreground">{event.actor || "-"}</span>
-                                                      {event.taskId ? (
-                                                        <Badge variant="outline" className="max-w-[56%] truncate text-[10px]">
-                                                          {shortTaskId(event.taskId)}
-                                                        </Badge>
-                                                      ) : null}
+                                                    <div className="min-h-[1rem] min-w-0 shrink-0 w-full text-xs font-medium text-muted-foreground truncate">
+                                                      {eventTime}
                                                     </div>
                                                   </CardContent>
                                                 </Card>
@@ -1287,8 +1289,9 @@ export default function ProjectDetailPage(props: {
                                                   <div className="font-semibold">{eventTitle}</div>
                                                   <div className="text-muted-foreground">{eventDetail}</div>
                                                   <div>时间: {eventTime}</div>
+                                                  {event.taskId ? <div>任务 ID: {event.taskId}</div> : null}
+                                                  {taskTitle ? <div>任务名称: {taskTitle}</div> : null}
                                                   <div>执行者: {event.actor || "-"}</div>
-                                                  {event.taskId ? <div>任务: {event.taskId}</div> : null}
                                                   {event.payload ? (
                                                     <pre className="max-h-40 overflow-auto rounded border bg-muted/40 p-2 text-[10px] leading-4">{event.payload}</pre>
                                                   ) : null}
@@ -1863,6 +1866,14 @@ function buildTaskAssigneeMap(tasks: Task[]): Map<string, string> {
   for (const task of tasks) {
     const assignee = task.assignments?.[0]?.employee?.id;
     if (assignee) map.set(task.id, assignee);
+  }
+  return map;
+}
+
+function buildTaskTitleMap(tasks: Task[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const task of tasks) {
+    map.set(task.id, task.title);
   }
   return map;
 }

@@ -52,6 +52,7 @@ func (w *Worker) executeTask(ctx context.Context, task *db.Task, projectID strin
 	taskTitle := task.Title
 	emptyRound := false
 	enteredReview := false
+	becameBlocked := false
 	project, err := w.svc.db.GetProject(ctx, projectID)
 	if err != nil {
 		log.Printf("[Worker %s] load project %s error: %v", w.name, projectID, err)
@@ -66,6 +67,7 @@ func (w *Worker) executeTask(ctx context.Context, task *db.Task, projectID strin
 		if runErr == nil {
 			emptyRound = cycleResult.EmptyRound
 			enteredReview = cycleResult.EnteredReview
+			becameBlocked = cycleResult.BecameBlocked
 		}
 		return runErr
 	}, func(attempt int, retryErr error) {
@@ -96,6 +98,11 @@ func (w *Worker) executeTask(ctx context.Context, task *db.Task, projectID strin
 	}
 
 	if enteredReview {
+		w.svc.TriggerCEOForProject(projectID)
+		return
+	}
+
+	if becameBlocked {
 		w.svc.TriggerCEOForProject(projectID)
 	}
 }

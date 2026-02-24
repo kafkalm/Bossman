@@ -14,13 +14,28 @@ import (
 )
 
 type fakeLLM struct {
-	resp *llm.LLMResponse
-	err  error
+	resp           *llm.LLMResponse
+	responses      []*llm.LLMResponse
+	err            error
+	lastMessages   []llm.ChatMessage
+	messagesByCall [][]llm.ChatMessage
+	callCount      int
 }
 
 func (f *fakeLLM) Call(cfg llm.ModelConfig, messages []llm.ChatMessage, system string, tools []llm.ToolDefinition, opts llm.CallOptions) (*llm.LLMResponse, error) {
+	snapshot := append([]llm.ChatMessage(nil), messages...)
+	f.lastMessages = snapshot
+	f.messagesByCall = append(f.messagesByCall, snapshot)
+	f.callCount++
 	if f.err != nil {
 		return nil, f.err
+	}
+	if len(f.responses) > 0 {
+		idx := f.callCount - 1
+		if idx < len(f.responses) {
+			return f.responses[idx], nil
+		}
+		return f.responses[len(f.responses)-1], nil
 	}
 	if f.resp == nil {
 		return &llm.LLMResponse{}, nil

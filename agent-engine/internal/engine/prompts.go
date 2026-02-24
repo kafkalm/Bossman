@@ -16,10 +16,17 @@ const ceoCorePrompt = `CEO Core Rules:
 `
 
 const workerCorePrompt = `Worker Core Rules:
-- First-cycle protocol (mandatory for each new task):
-  1) produce a concrete execution plan tied to task requirements,
-  2) save that plan via save_to_workspace,
-  3) then produce concrete deliverable files via create_file/save_to_workspace.
+- Phase protocol is based on workspace files (not task status):
+  1) If no plan file exists in your task folder, produce a concrete execution plan and save it (plan.md/outline.md/checklist.md).
+  2) If a plan file already exists, continue execution and produce non-plan deliverable files.
+  3) Do not keep rewriting plan files once execution phase has started.
+- Every round, you must call report_plan_progress exactly once:
+  - include completed_items / in_progress_items / next_items / blocked_items
+  - include updated_plan_content as the full updated plan text
+  - include summary for this round
+- In execution phase, report_plan_progress must reflect real execution:
+  - at least one non-plan deliverable file this round
+  - completed_items is non-empty, or blocked_items explains why progress is blocked
 - Task status only enters review when you explicitly call submit_for_review.
 - Plan or intermediate files alone must stay in in_progress (not review).
 - Before creating final deliverable, run a self-check:
