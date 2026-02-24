@@ -7,6 +7,7 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/packages/param"
 )
 
 // OpenAIProvider implements Provider for OpenAI, OpenRouter, and DeepSeek
@@ -36,7 +37,7 @@ func NewDeepSeekProvider(apiKey string) *OpenAIProvider {
 	return &OpenAIProvider{client: client, provider: "deepseek"}
 }
 
-func (p *OpenAIProvider) Call(cfg ModelConfig, messages []ChatMessage, system string, tools []ToolDefinition) (*LLMResponse, error) {
+func (p *OpenAIProvider) Call(cfg ModelConfig, messages []ChatMessage, system string, tools []ToolDefinition, opts CallOptions) (*LLMResponse, error) {
 	ctx := context.Background()
 
 	var oaiMessages []openai.ChatCompletionMessageParamUnion
@@ -79,6 +80,11 @@ func (p *OpenAIProvider) Call(cfg ModelConfig, messages []ChatMessage, system st
 			})
 		}
 		params.Tools = oaiTools
+		if opts.RequireToolCall {
+			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
+				OfAuto: param.Opt[string]{Value: string(openai.ChatCompletionToolChoiceOptionAutoRequired)},
+			}
+		}
 	}
 
 	resp, err := p.client.Chat.Completions.New(ctx, params)

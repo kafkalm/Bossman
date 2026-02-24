@@ -16,7 +16,7 @@ func NewGoogleProvider(apiKey string) *GoogleProvider {
 	return &GoogleProvider{apiKey: apiKey}
 }
 
-func (p *GoogleProvider) Call(cfg ModelConfig, messages []ChatMessage, system string, tools []ToolDefinition) (*LLMResponse, error) {
+func (p *GoogleProvider) Call(cfg ModelConfig, messages []ChatMessage, system string, tools []ToolDefinition, opts CallOptions) (*LLMResponse, error) {
 	ctx := context.Background()
 
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
@@ -76,6 +76,13 @@ func (p *GoogleProvider) Call(cfg ModelConfig, messages []ChatMessage, system st
 		}
 		config.Tools = []*genai.Tool{
 			{FunctionDeclarations: funcDecls},
+		}
+		if opts.RequireToolCall {
+			config.ToolConfig = &genai.ToolConfig{
+				FunctionCallingConfig: &genai.FunctionCallingConfig{
+					Mode: genai.FunctionCallingConfigModeAny,
+				},
+			}
 		}
 	}
 

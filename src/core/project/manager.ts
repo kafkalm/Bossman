@@ -23,45 +23,97 @@ export class ProjectManager {
    * Get a project with all tasks and assignments.
    */
   async getProject(id: string) {
-    return prisma.project.findUnique({
+    const project = await prisma.project.findUnique({
       where: { id },
       include: {
-        tasks: {
-          where: { parentId: null }, // only top-level tasks
+        company: {
+          include: {
+            employees: {
+              include: {
+                role: { select: { id: true, name: true, title: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!project) return null;
+
+    const [tasks, messages, files] = await Promise.all([
+      prisma.task
+        .findMany({
+          where: { projectId: id, parentId: null },
           include: {
             assignments: {
-              include: { employee: { include: { role: true } } },
+              include: {
+                employee: {
+                  include: {
+                    role: { select: { id: true, name: true, title: true } },
+                  },
+                },
+              },
             },
             subTasks: {
               include: {
                 assignments: {
-                  include: { employee: { include: { role: true } } },
+                  include: {
+                    employee: {
+                      include: {
+                        role: { select: { id: true, name: true, title: true } },
+                      },
+                    },
+                  },
                 },
               },
             },
           },
           orderBy: { priority: "desc" },
-        },
-        company: {
-          include: {
-            employees: { include: { role: true } },
-          },
-        },
-        messages: {
+        })
+        .catch((error) => {
+          console.warn("[ProjectManager.getProject] tasks query failed, fallback to empty list:", error);
+          return [];
+        }),
+      prisma.message
+        .findMany({
+          where: { projectId: id },
           orderBy: { createdAt: "asc" },
           include: {
-            sender: { include: { role: true } },
+            sender: {
+              include: {
+                role: { select: { id: true, name: true, title: true } },
+              },
+            },
           },
-        },
-        files: {
+        })
+        .catch((error) => {
+          console.warn("[ProjectManager.getProject] messages query failed, fallback to empty list:", error);
+          return [];
+        }),
+      prisma.projectFile
+        .findMany({
+          where: { projectId: id },
           orderBy: { createdAt: "asc" },
           include: {
-            employee: { include: { role: true } },
+            employee: {
+              include: {
+                role: { select: { id: true, name: true, title: true } },
+              },
+            },
             task: { select: { id: true, title: true } },
           },
-        },
-      },
-    });
+        })
+        .catch((error) => {
+          console.warn("[ProjectManager.getProject] files query failed, fallback to empty list:", error);
+          return [];
+        }),
+    ]);
+
+    return {
+      ...project,
+      tasks,
+      messages,
+      files,
+    };
   }
 
   /**

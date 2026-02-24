@@ -13,6 +13,7 @@ import (
 type CeoCycleResult struct {
 	ShouldStop          bool
 	Skipped             bool
+	NoActionInReview    bool
 	AssignedEmployeeIDs []string
 	ApprovedCount       int
 	SavedDocument       bool
@@ -59,11 +60,14 @@ func (c *CEO) runCycle(ctx context.Context, req CeoCycleRequest) (*CeoCycleResul
 		return nil, fmt.Errorf("build snapshot: %w", err)
 	}
 
-	var promptContent string
+	var (
+		promptContent string
+		phase         CeoPhase
+	)
 	if req.FounderMessage != "" {
 		promptContent = BuildFounderPrompt(req.FounderMessage, snapshot)
 	} else {
-		phase := GetCeoPhase(project, tasks)
+		phase = GetCeoPhase(project, tasks)
 		if phase == PhaseHasActiveWork && AllTasksActiveOrInProgress(tasks) {
 			return &CeoCycleResult{Skipped: true}, nil
 		}
@@ -82,13 +86,30 @@ func (c *CEO) runCycle(ctx context.Context, req CeoCycleRequest) (*CeoCycleResul
 		Project:            project,
 		Tools:              buildCeoTools(teamRoles),
 		AdditionalMessages: []llm.ChatMessage{{Role: "user", Content: promptContent}},
+		RequireToolCall:    req.FounderMessage == "" && phase == PhaseTasksInReview,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("CEO LLM call: %w", err)
 	}
 
+	if req.FounderMessage == "" && phase == PhaseTasksInReview && !hasReviewDecisionAction(result.ToolCalls) {
+		_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, nil,
+			"[Guardrail] CEO review cycle returned without approve/request actions. Retrying with enforced tool execution.")
+		retryPrompt := promptContent + "\n\n[Enforcement] You did not execute review tools in the previous attempt. Call approve_task and/or request_revision now."
+		result, err = c.svc.Run(ctx, RunOptions{
+			Employee:           ceo,
+			Project:            project,
+			Tools:              buildCeoTools(teamRoles),
+			AdditionalMessages: []llm.ChatMessage{{Role: "user", Content: retryPrompt}},
+			RequireToolCall:    true,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("CEO LLM retry call: %w", err)
+		}
+	}
+
 	if len(result.ToolCalls) == 0 {
-		return &CeoCycleResult{}, nil
+		return &CeoCycleResult{NoActionInReview: req.FounderMessage == "" && phase == PhaseTasksInReview}, nil
 	}
 	return c.processToolCalls(ctx, req.RunState, project, employees, result.ToolCalls)
 }
@@ -112,6 +133,16 @@ func shouldSelfTrigger(result *CeoCycleResult, tasks []db.TaskWithAssignment) bo
 
 func (c *CEO) buildCycleSnapshot(ctx context.Context, project *db.Project, tasks []db.TaskWithAssignment, employees []db.EmployeeWithRole) (string, error) {
 	var lines []string
+	workspaceFiles, _ := c.svc.workspace.ListFiles(project.ID)
+	taskWorkspaceFiles := map[string][]string{}
+	for _, entry := range workspaceFiles {
+		parts := strings.Split(entry.RelativePath, "/")
+		if len(parts) < 3 {
+			continue
+		}
+		taskID := parts[1]
+		taskWorkspaceFiles[taskID] = append(taskWorkspaceFiles[taskID], entry.RelativePath)
+	}
 
 	lines = append(lines, "## Team Members")
 	for _, emp := range employees {
@@ -172,6 +203,31 @@ func (c *CEO) buildCycleSnapshot(ctx context.Context, project *db.Project, tasks
 		lines = append(lines, "")
 		lines = append(lines, fmt.Sprintf("**Progress**: %d/%d completed, %d in review, %d in-progress, %d blocked",
 			completed, total, inReview, inProgress, blocked))
+
+		if inReview > 0 {
+			lines = append(lines, "")
+			lines = append(lines, "## Review Checklist (take tool actions, no plain analysis)")
+			for _, task := range tasks {
+				if task.Status != TaskStatusReview {
+					continue
+				}
+				outputLen := 0
+				if task.Output != nil {
+					outputLen = len(strings.TrimSpace(*task.Output))
+				}
+				files := taskWorkspaceFiles[task.ID]
+				filePreview := "none"
+				if len(files) > 0 {
+					limit := len(files)
+					if limit > 2 {
+						limit = 2
+					}
+					filePreview = strings.Join(files[:limit], ", ")
+				}
+				lines = append(lines, fmt.Sprintf("- taskId `%s`: output_len=%d, workspace_files=%d (%s)",
+					task.ID, outputLen, len(files), filePreview))
+			}
+		}
 	}
 
 	recentMsgs, err := c.svc.db.GetRecentProjectMessages(ctx, project.ID, 15)
@@ -213,4 +269,13 @@ func countTasksByStatus(tasks []db.TaskWithAssignment, status string) int {
 		}
 	}
 	return n
+}
+
+func hasReviewDecisionAction(toolCalls []llm.ToolCall) bool {
+	for _, tc := range toolCalls {
+		if tc.Name == "approve_task" || tc.Name == "request_revision" {
+			return true
+		}
+	}
+	return false
 }

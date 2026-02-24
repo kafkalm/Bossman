@@ -8,7 +8,7 @@ import (
 
 // LLMCaller is the minimal LLM dependency used by the engine.
 type LLMCaller interface {
-	Call(cfg llm.ModelConfig, messages []llm.ChatMessage, system string, tools []llm.ToolDefinition) (*llm.LLMResponse, error)
+	Call(cfg llm.ModelConfig, messages []llm.ChatMessage, system string, tools []llm.ToolDefinition, opts llm.CallOptions) (*llm.LLMResponse, error)
 }
 
 // WorkspaceStore is the minimal workspace dependency used by workers.

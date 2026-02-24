@@ -133,14 +133,28 @@ async function collectFiles(
  */
 export async function hydrateProjectFilesContent(project: {
   id: string;
-  files?: { employeeId: string; path: string | null; title: string; content: string }[];
+  files?: { employeeId: string; path: string | null; title: string; content: string; taskId?: string | null }[];
 }): Promise<void> {
   if (!project.files?.length) return;
   for (const file of project.files) {
     if (file.content != null && file.content !== "") continue;
-    const relative = getFileRelativePath(file.employeeId, file.path, file.title);
-    if (!relative) continue;
-    const content = await readWorkspaceFile(project.id, relative);
-    if (content != null) (file as { content: string }).content = content;
+    const candidates: string[] = [];
+
+    const primary = getFileRelativePath(file.employeeId, file.path, file.title);
+    if (primary) candidates.push(primary);
+
+    // Some historical writes used employeeId/taskId/title as workspace path.
+    if (file.taskId) {
+      const withTaskDir = getFileRelativePath(file.employeeId, file.path ? `${file.taskId}/${file.path}` : file.taskId, file.title);
+      if (withTaskDir) candidates.push(withTaskDir);
+    }
+
+    for (const relative of candidates) {
+      const content = await readWorkspaceFile(project.id, relative);
+      if (content != null) {
+        (file as { content: string }).content = content;
+        break;
+      }
+    }
   }
 }

@@ -51,6 +51,12 @@ type TokenUsageInfo struct {
 	Cost         *float64
 }
 
+// CallOptions controls provider-specific invocation behaviors.
+type CallOptions struct {
+	// RequireToolCall asks the provider to force a tool call when tools are present.
+	RequireToolCall bool
+}
+
 // LLMResponse is the normalized response from any provider
 type LLMResponse struct {
 	Content   string
@@ -60,5 +66,5 @@ type LLMResponse struct {
 
 // Provider is the interface every LLM backend must implement
 type Provider interface {
-	Call(cfg ModelConfig, messages []ChatMessage, system string, tools []ToolDefinition) (*LLMResponse, error)
+	Call(cfg ModelConfig, messages []ChatMessage, system string, tools []ToolDefinition, opts CallOptions) (*LLMResponse, error)
 }

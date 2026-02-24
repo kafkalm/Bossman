@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -69,6 +70,19 @@ func (c *CEO) runOneCeoCycle(ctx context.Context, projectID string) {
 	}
 
 	c.iterations[projectID]++
+	if result.NoActionInReview {
+		c.reviewNoActionRuns[projectID]++
+		if c.reviewNoActionRuns[projectID] >= 2 {
+			if c.forceReviewProgress(ctx, runState, projectID) {
+				c.reviewNoActionRuns[projectID] = 0
+				c.TriggerProject(projectID)
+				return
+			}
+		}
+	} else {
+		c.reviewNoActionRuns[projectID] = 0
+	}
+
 	if result.ShouldStop {
 		c.svc.StopProject(projectID)
 		return
@@ -87,4 +101,52 @@ func (c *CEO) runOneCeoCycle(ctx context.Context, projectID string) {
 	if shouldSelfTrigger(result, tasks) {
 		c.TriggerProject(projectID)
 	}
+}
+
+// forceReviewProgress applies a deterministic fallback when CEO repeatedly produces no
+// tool actions while tasks are stuck in review.
+func (c *CEO) forceReviewProgress(ctx context.Context, runState ProjectRunState, projectID string) bool {
+	tasks, err := c.svc.db.GetTasksForProject(ctx, projectID)
+	if err != nil {
+		return false
+	}
+
+	for _, task := range tasks {
+		if task.Status != TaskStatusReview {
+			continue
+		}
+
+		output := ""
+		if task.Output != nil {
+			output = strings.TrimSpace(*task.Output)
+		}
+
+		// Very weak outputs or explicit "no workspace files" reports are sent back for revision.
+		needsRevision := output == "" ||
+			len(output) < 120 ||
+			strings.Contains(strings.ToLower(output), "no files in workspace")
+
+		if needsRevision {
+			validateTaskTransitionOrWarn(task.Status, TaskStatusInProgress, task.ID)
+			if err := c.svc.db.ClearTaskOutput(ctx, task.ID); err != nil {
+				return false
+			}
+			_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, &task.ID,
+				"[Auto-review fallback] Deliverable quality is insufficient. Please revise with concrete output, file paths, and a concise summary.")
+			if task.AssigneeID != nil {
+				runState.WakeWorker(*task.AssigneeID)
+			}
+			return true
+		}
+
+		validateTaskTransitionOrWarn(task.Status, TaskStatusCompleted, task.ID)
+		if err := c.svc.db.UpdateTaskStatus(ctx, task.ID, TaskStatusCompleted); err != nil {
+			return false
+		}
+		_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, &task.ID,
+			"[Auto-review fallback] Task approved after repeated no-action CEO cycles.")
+		return true
+	}
+
+	return false
 }

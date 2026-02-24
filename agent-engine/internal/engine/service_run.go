@@ -22,6 +22,7 @@ type RunOptions struct {
 	TaskID             *string
 	Tools              []llm.ToolDefinition
 	AdditionalMessages []llm.ChatMessage
+	RequireToolCall    bool
 }
 
 // RunResult is the output of Service.Run.
@@ -76,7 +77,9 @@ func (s *Service) Run(ctx context.Context, opts RunOptions) (*RunResult, error) 
 		_ = s.db.SetEmployeeStatus(ctx, emp.ID, "idle")
 	}()
 
-	resp, err := s.llm.Call(modelCfg, messages, emp.RoleSystemPrompt, opts.Tools)
+	resp, err := s.llm.Call(modelCfg, messages, emp.RoleSystemPrompt, opts.Tools, llm.CallOptions{
+		RequireToolCall: opts.RequireToolCall,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("llm call: %w", err)
 	}

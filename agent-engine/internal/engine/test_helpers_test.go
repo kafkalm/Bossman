@@ -18,7 +18,7 @@ type fakeLLM struct {
 	err  error
 }
 
-func (f *fakeLLM) Call(cfg llm.ModelConfig, messages []llm.ChatMessage, system string, tools []llm.ToolDefinition) (*llm.LLMResponse, error) {
+func (f *fakeLLM) Call(cfg llm.ModelConfig, messages []llm.ChatMessage, system string, tools []llm.ToolDefinition, opts llm.CallOptions) (*llm.LLMResponse, error) {
 	if f.err != nil {
 		return nil, f.err
 	}

@@ -103,7 +103,13 @@ First decide which roles are actually needed for this project (involve as few em
 	case PhaseTasksInReview:
 		return preamble + `**Current phase: Tasks in review or team has questions.**
 
-Check Recent Messages first. If anyone asked for clarification, answer via ` + "`send_message`" + ` or get an answer via ` + "`request_info`" + ` and then send a summary. Do not ` + "`approve_task`" + ` until clarifications are addressed. For each task in review: if the deliverable is good, use ` + "`approve_task`" + `; if not, use ` + "`request_revision`" + ` with concrete feedback. When all relevant deliverables are approved and questions answered, use ` + "`save_project_document`" + ` (doc phase) or move on.
+Check Recent Messages first. If anyone asked for clarification, answer via ` + "`send_message`" + ` or get an answer via ` + "`request_info`" + ` and then send a summary. Do not ` + "`approve_task`" + ` until clarifications are addressed.
+
+For each task in review: if the deliverable is good, use ` + "`approve_task`" + `; if not, use ` + "`request_revision`" + ` with concrete feedback.
+
+Hard requirement for this cycle: you MUST call at least one review action tool (` + "`approve_task`" + ` or ` + "`request_revision`" + `) when there are tasks in review. Do NOT return only analysis text.
+
+When all relevant deliverables are approved and questions answered, use ` + "`save_project_document`" + ` (doc phase) or move on.
 
 Take action now.`
 

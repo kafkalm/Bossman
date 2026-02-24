@@ -37,33 +37,33 @@ func NewRegistry(cfg *config.Config) *Registry {
 }
 
 // Call dispatches an LLM call to the correct provider
-func (r *Registry) Call(cfg ModelConfig, messages []ChatMessage, system string, tools []ToolDefinition) (*LLMResponse, error) {
+func (r *Registry) Call(cfg ModelConfig, messages []ChatMessage, system string, tools []ToolDefinition, opts CallOptions) (*LLMResponse, error) {
 	switch cfg.Provider {
 	case "anthropic":
 		if r.anthropic == nil {
 			return nil, fmt.Errorf("ANTHROPIC_API_KEY not configured")
 		}
-		return r.anthropic.Call(cfg, messages, system, tools)
+		return r.anthropic.Call(cfg, messages, system, tools, opts)
 	case "openai":
 		if r.openai == nil {
 			return nil, fmt.Errorf("OPENAI_API_KEY not configured")
 		}
-		return r.openai.Call(cfg, messages, system, tools)
+		return r.openai.Call(cfg, messages, system, tools, opts)
 	case "google":
 		if r.google == nil {
 			return nil, fmt.Errorf("GOOGLE_GENERATIVE_AI_API_KEY not configured")
 		}
-		return r.google.Call(cfg, messages, system, tools)
+		return r.google.Call(cfg, messages, system, tools, opts)
 	case "openrouter":
 		if r.openrouter == nil {
 			return nil, fmt.Errorf("OPENROUTER_API_KEY not configured")
 		}
-		return r.openrouter.Call(cfg, messages, system, tools)
+		return r.openrouter.Call(cfg, messages, system, tools, opts)
 	case "deepseek":
 		if r.deepseek == nil {
 			return nil, fmt.Errorf("DEEPSEEK_API_KEY not configured")
 		}
-		return r.deepseek.Call(cfg, messages, system, tools)
+		return r.deepseek.Call(cfg, messages, system, tools, opts)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Provider)
 	}

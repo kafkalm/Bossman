@@ -20,7 +20,7 @@ func NewAnthropicProvider(apiKey string) *AnthropicProvider {
 	return &AnthropicProvider{client: &client}
 }
 
-func (p *AnthropicProvider) Call(cfg ModelConfig, messages []ChatMessage, system string, tools []ToolDefinition) (*LLMResponse, error) {
+func (p *AnthropicProvider) Call(cfg ModelConfig, messages []ChatMessage, system string, tools []ToolDefinition, opts CallOptions) (*LLMResponse, error) {
 	ctx := context.Background()
 
 	// Convert messages to Anthropic MessageParam
@@ -74,6 +74,13 @@ func (p *AnthropicProvider) Call(cfg ModelConfig, messages []ChatMessage, system
 			anthropicTools = append(anthropicTools, anthropic.ToolUnionParam{OfTool: &tp})
 		}
 		params.Tools = anthropicTools
+		if opts.RequireToolCall {
+			params.ToolChoice = anthropic.ToolChoiceUnionParam{
+				OfAny: &anthropic.ToolChoiceAnyParam{
+					DisableParallelToolUse: param.Opt[bool]{Value: true},
+				},
+			}
+		}
 	}
 
 	resp, err := p.client.Messages.New(ctx, params)
