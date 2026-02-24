@@ -17,12 +17,16 @@ func sendSystemMsg(ctx context.Context, database *db.DB, msgBus BusPublisher, pr
 	if err != nil {
 		return err
 	}
+	messageType := EngineEventProjectUpdated
+	if taskID != nil {
+		messageType = EngineEventTaskUpdated
+	}
 	msgBus.Publish(bus.BusMessage{
 		ID:          msg.ID,
 		ProjectID:   projectID,
 		TaskID:      taskID,
 		SenderType:  "system",
-		MessageType: EngineEventStatusUpdate,
+		MessageType: messageType,
 		Content:     content,
 		Metadata:    meta,
 		CreatedAt:   msg.CreatedAt,
@@ -42,7 +46,7 @@ func sendAgentMsg(ctx context.Context, database *db.DB, msgBus BusPublisher, pro
 		TaskID:      taskID,
 		SenderID:    senderID,
 		SenderType:  "agent",
-		MessageType: EngineEventDeliverable,
+		MessageType: EngineEventTaskUpdated,
 		Content:     content,
 		Metadata:    metadata,
 		CreatedAt:   msg.CreatedAt,

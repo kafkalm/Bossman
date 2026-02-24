@@ -92,10 +92,11 @@ func (c *CEO) runCycle(ctx context.Context, req CeoCycleRequest) (*CeoCycleResul
 		return nil, fmt.Errorf("CEO LLM call: %w", err)
 	}
 
-	if req.FounderMessage == "" && phase == PhaseTasksInReview && !hasReviewDecisionAction(result.ToolCalls) {
+	reviewNeedsAction := req.FounderMessage == "" && phase == PhaseTasksInReview && !reviewDecisionsCoverAll(tasks, result.ToolCalls)
+	if reviewNeedsAction {
 		_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, nil,
-			"[Guardrail] CEO review cycle returned without approve/request actions. Retrying with enforced tool execution.")
-		retryPrompt := promptContent + "\n\n[Enforcement] You did not execute review tools in the previous attempt. Call approve_task and/or request_revision now."
+			"[Guardrail] CEO review cycle returned without full review decisions. Retrying with enforced tool execution.")
+		retryPrompt := promptContent + "\n\n[Enforcement] You must decide each review task using approve_task, request_revision, or block_task."
 		result, err = c.svc.Run(ctx, RunOptions{
 			Employee:           ceo,
 			Project:            project,
@@ -108,7 +109,7 @@ func (c *CEO) runCycle(ctx context.Context, req CeoCycleRequest) (*CeoCycleResul
 		}
 	}
 
-	if len(result.ToolCalls) == 0 {
+	if len(result.ToolCalls) == 0 || (req.FounderMessage == "" && phase == PhaseTasksInReview && !reviewDecisionsCoverAll(tasks, result.ToolCalls)) {
 		return &CeoCycleResult{NoActionInReview: req.FounderMessage == "" && phase == PhaseTasksInReview}, nil
 	}
 	return c.processToolCalls(ctx, req.RunState, project, employees, result.ToolCalls)
@@ -165,12 +166,12 @@ func (c *CEO) buildCycleSnapshot(ctx context.Context, project *db.Project, tasks
 		lines = append(lines, "_No tasks have been created yet._")
 	} else {
 		statusEmoji := map[string]string{
-			TaskStatusPending:    "⏳",
-			TaskStatusAssigned:   "📋",
+			TaskStatusTodo:       "⏳",
 			TaskStatusInProgress: "🔄",
-			TaskStatusCompleted:  "✅",
+			TaskStatusDone:       "✅",
 			TaskStatusBlocked:    "❌",
 			TaskStatusReview:     "🔍",
+			TaskStatusCanceled:   "🚫",
 		}
 		for _, task := range tasks {
 			emoji := statusEmoji[task.Status]
@@ -196,7 +197,7 @@ func (c *CEO) buildCycleSnapshot(ctx context.Context, project *db.Project, tasks
 		}
 
 		total := len(tasks)
-		completed := countTasksByStatus(tasks, TaskStatusCompleted)
+		completed := countTasksByStatus(tasks, TaskStatusDone)
 		inReview := countTasksByStatus(tasks, TaskStatusReview)
 		inProgress := countTasksByStatus(tasks, TaskStatusInProgress)
 		blocked := countTasksByStatus(tasks, TaskStatusBlocked)
@@ -271,11 +272,22 @@ func countTasksByStatus(tasks []db.TaskWithAssignment, status string) int {
 	return n
 }
 
-func hasReviewDecisionAction(toolCalls []llm.ToolCall) bool {
-	for _, tc := range toolCalls {
-		if tc.Name == "approve_task" || tc.Name == "request_revision" {
-			return true
+func reviewDecisionsCoverAll(tasks []db.TaskWithAssignment, toolCalls []llm.ToolCall) bool {
+	pending := map[string]struct{}{}
+	for _, task := range tasks {
+		if normalizeTaskStatus(task.Status) == TaskStatusReview {
+			pending[task.ID] = struct{}{}
 		}
 	}
-	return false
+	if len(pending) == 0 {
+		return true
+	}
+	for _, tc := range toolCalls {
+		if tc.Name != "approve_task" && tc.Name != "request_revision" && tc.Name != "block_task" {
+			continue
+		}
+		taskID, _ := tc.Args["taskId"].(string)
+		delete(pending, taskID)
+	}
+	return len(pending) == 0
 }

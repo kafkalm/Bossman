@@ -74,6 +74,10 @@ model Employee {
   tokenUsages     TokenUsage[]
   directMessages  DirectMessage[]
   skills          EmployeeSkill[]
+  inboxItems      EmployeeInbox[]
+  sentConvMsgs    ConversationMessage[] @relation("ConvMsgFrom")
+  recvConvMsgs    ConversationMessage[] @relation("ConvMsgTo")
+  conversationThreads ConversationThread[] @relation("ThreadCreatedBy")
 }
 
 model EmployeeSkill {
@@ -100,7 +104,7 @@ model Project {
   name        String
   description String        @default("")
   document    String?       // Markdown: compiled project document
-  status      String        @default("planning") // planning, in_progress, review, completed, failed
+  status      String        @default("active") // active, review, done, blocked, canceled
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
   company     Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -108,6 +112,12 @@ model Project {
   messages    Message[]
   files       ProjectFile[]
   tokenUsages TokenUsage[]
+  projectTransitions ProjectTransition[]
+  taskTransitions    TaskTransition[]
+  conversationThreads ConversationThread[]
+  conversationMessages ConversationMessage[]
+  inboxItems          EmployeeInbox[]
+  timelineEvents      EngineTimelineEvent[]
 }
 
 // ─── Project File (employee deliverable) ────────────────────────────────────
@@ -136,7 +146,7 @@ model Task {
   parentId    String? // for sub-tasks
   title       String
   description String
-  status      String         @default("pending") // pending, assigned, in_progress, review, completed, blocked
+  status      String         @default("todo") // todo, in_progress, review, done, blocked, canceled
   priority    Int            @default(0) // higher = more important
   output      String?        // agent's deliverable / result
   createdAt   DateTime       @default(now())
@@ -147,6 +157,11 @@ model Task {
   assignments TaskAssignment[]
   messages    Message[]
   files       ProjectFile[]
+  taskTransitions TaskTransition[]
+  conversationThreads ConversationThread[]
+  conversationMessages ConversationMessage[]
+  inboxItems EmployeeInbox[]
+  timelineEvents EngineTimelineEvent[]
 }
 
 // ─── Task Assignment ─────────────────────────────────────────────────────────
@@ -204,4 +219,94 @@ model TokenUsage {
   createdAt    DateTime @default(now())
   employee     Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
   project      Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+}
+
+model ProjectTransition {
+  id         String   @id @default(cuid())
+  projectId  String
+  fromStatus String
+  toStatus   String
+  reason     String
+  actor      String
+  createdAt  DateTime @default(now())
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model TaskTransition {
+  id         String   @id @default(cuid())
+  taskId     String
+  projectId  String
+  fromStatus String
+  toStatus   String
+  reason     String
+  actor      String
+  createdAt  DateTime @default(now())
+  task       Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model ConversationThread {
+  id        String   @id @default(cuid())
+  projectId String
+  taskId    String?
+  subject   String
+  createdBy String
+  status    String   @default("open")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task      Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  creator   Employee @relation("ThreadCreatedBy", fields: [createdBy], references: [id], onDelete: Cascade)
+  messages  ConversationMessage[]
+  inboxItems EmployeeInbox[]
+}
+
+model ConversationMessage {
+  id             String   @id @default(cuid())
+  threadId       String
+  projectId      String
+  taskId         String?
+  fromEmployeeId String?
+  toEmployeeId   String?
+  messageType    String
+  content        String
+  payload        String?
+  createdAt      DateTime @default(now())
+  thread         ConversationThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  project        Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task           Task?              @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  fromEmployee   Employee?          @relation("ConvMsgFrom", fields: [fromEmployeeId], references: [id], onDelete: SetNull)
+  toEmployee     Employee?          @relation("ConvMsgTo", fields: [toEmployeeId], references: [id], onDelete: SetNull)
+  inboxItems     EmployeeInbox[]
+}
+
+model EmployeeInbox {
+  id         String   @id @default(cuid())
+  employeeId String
+  projectId  String
+  taskId     String?
+  threadId   String?
+  messageId  String?
+  status     String   @default("pending") // pending, processing, done, expired
+  expiresAt  DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task       Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  thread     ConversationThread? @relation(fields: [threadId], references: [id], onDelete: SetNull)
+  message    ConversationMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+}
+
+model EngineTimelineEvent {
+  id        String   @id @default(cuid())
+  projectId String
+  taskId    String?
+  eventType String
+  actor     String
+  summary   String
+  payload   String?
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task      Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
 }

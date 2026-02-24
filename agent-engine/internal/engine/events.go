@@ -1,6 +1,8 @@
 package engine
 
 const (
-	EngineEventDeliverable  = "deliverable"
-	EngineEventStatusUpdate = "status_update"
+	EngineEventProjectUpdated   = "project.updated"
+	EngineEventTaskUpdated      = "task.updated"
+	EngineEventTaskTransitioned = "task.transitioned"
+	EngineEventEngineAlert      = "engine.alert"
 )

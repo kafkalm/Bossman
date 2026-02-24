@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { getGoEngineURL } from "@/lib/go-engine";
 import { messageBus } from "@/core/communication/message-bus";
 import { projectManager } from "@/core/project";
-
-const GO_ENGINE_URL = process.env.GO_ENGINE_URL ?? "http://localhost:8080";
 
 const MessageSchema = z.object({
   content: z.string().min(1),
@@ -48,7 +47,7 @@ export async function POST(
     }
 
     // 3. Forward message to Go engine so CEO can respond
-    const res = await fetch(`${GO_ENGINE_URL}/engine/projects/${id}/message`, {
+    const res = await fetch(`${getGoEngineURL()}/engine/projects/${id}/message`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content }),

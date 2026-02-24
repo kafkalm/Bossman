@@ -4,18 +4,21 @@
  */
 
 import { prisma } from "@/lib/db";
+import { getGoEngineURL } from "@/lib/go-engine";
 import { messageBus } from "@/core/communication/message-bus";
 import { projectManager } from "./manager";
 
-const GO_ENGINE_URL = process.env.GO_ENGINE_URL ?? "http://localhost:8080";
-
 async function callGoEngine(path: string, body?: object): Promise<void> {
   try {
-    await fetch(`${GO_ENGINE_URL}${path}`, {
+    const res = await fetch(`${getGoEngineURL()}${path}`, {
       method: "POST",
       headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
     });
+    if (!res.ok) {
+      const payload = await res.text().catch(() => "");
+      console.error(`[ProjectWorkflow] Go engine call to ${path} failed: ${res.status} ${payload}`);
+    }
   } catch (err) {
     console.error(`[ProjectWorkflow] Go engine call to ${path} failed:`, err);
   }

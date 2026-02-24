@@ -23,6 +23,10 @@ func (c *CEO) Loop(ctx context.Context) error {
 			if err != nil {
 				continue
 			}
+			if len(projectIDs) == 0 {
+				_ = c.svc.db.SetEmployeeStatus(ctx, c.id, "idle")
+				continue
+			}
 			for _, projectID := range projectIDs {
 				c.runOneCeoCycle(ctx, projectID)
 				break // one project per tick to avoid starving others
@@ -45,7 +49,7 @@ func (c *CEO) runOneCeoCycle(ctx context.Context, projectID string) {
 		log.Printf("[CEO %s] load project error: %v", projectID, err)
 		return
 	}
-	if project.Status != ProjectStatusInProgress {
+	if normalizeProjectStatus(project.Status) != ProjectStatusActive && normalizeProjectStatus(project.Status) != ProjectStatusReview {
 		return
 	}
 
@@ -93,8 +97,11 @@ func (c *CEO) runOneCeoCycle(ctx context.Context, projectID string) {
 	}
 
 	projectAfter, err := c.svc.db.GetProject(ctx, projectID)
-	if err == nil && (projectAfter.Status == ProjectStatusCompleted || projectAfter.Status == ProjectStatusFailed) {
-		return
+	if err == nil {
+		status := normalizeProjectStatus(projectAfter.Status)
+		if status == ProjectStatusDone || status == ProjectStatusBlocked || status == ProjectStatusCanceled {
+			return
+		}
 	}
 
 	tasks, _ := c.svc.db.GetTasksForProject(ctx, projectID)
@@ -127,10 +134,10 @@ func (c *CEO) forceReviewProgress(ctx context.Context, runState ProjectRunState,
 			strings.Contains(strings.ToLower(output), "no files in workspace")
 
 		if needsRevision {
-			validateTaskTransitionOrWarn(task.Status, TaskStatusInProgress, task.ID)
 			if err := c.svc.db.ClearTaskOutput(ctx, task.ID); err != nil {
 				return false
 			}
+			_ = c.svc.TransitionTaskStatus(ctx, task.ID, TaskStatusInProgress, "forced_review_decision: insufficient output", "ceo:auto")
 			_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, &task.ID,
 				"[Auto-review fallback] Deliverable quality is insufficient. Please revise with concrete output, file paths, and a concise summary.")
 			if task.AssigneeID != nil {
@@ -139,8 +146,7 @@ func (c *CEO) forceReviewProgress(ctx context.Context, runState ProjectRunState,
 			return true
 		}
 
-		validateTaskTransitionOrWarn(task.Status, TaskStatusCompleted, task.ID)
-		if err := c.svc.db.UpdateTaskStatus(ctx, task.ID, TaskStatusCompleted); err != nil {
+		if err := c.svc.TransitionTaskStatus(ctx, task.ID, TaskStatusDone, "forced_review_decision: approve fallback", "ceo:auto"); err != nil {
 			return false
 		}
 		_ = sendSystemMsg(ctx, c.svc.db, c.svc.bus, projectID, &task.ID,

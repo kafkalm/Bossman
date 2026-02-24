@@ -12,6 +12,7 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:seed": "npx tsx prisma/seed.ts",
+    "db:truncate-projects": "npx tsx scripts/truncate-project-data.ts --yes",
     "db:studio": "prisma studio",
     "skills:sync": "npx tsx scripts/sync-skills-from-project.ts",
     "postinstall": "prisma generate"

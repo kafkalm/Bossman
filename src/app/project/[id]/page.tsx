@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useState, useRef, use, useCallback } from "react";
+import { useEffect, useState, useRef, use, useCallback } from "react";
 import Link from "next/link";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,8 @@ import {
   Loader2,
   Circle,
   Info,
+  Pause,
+  Play,
   FileText,
   FolderOpen,
   ChevronRight,
@@ -120,6 +122,29 @@ interface Project {
   tokenCount?: number;
 }
 
+type TimelineEvent = {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  eventType: string;
+  actor: string;
+  summary: string;
+  payload: string | null;
+  createdAt: string;
+};
+
+type TimelineLane = {
+  employeeId: string;
+  name: string;
+  roleTitle: string;
+  lastActiveAt: number;
+};
+
+const TIMELINE_CARD_WIDTH = 300;
+const TIMELINE_CARD_HEIGHT = 116;
+const TIMELINE_ROW_MIN_HEIGHT = 144;
+const TIMELINE_LANE_WIDTH = TIMELINE_CARD_WIDTH + 24;
+
 const statusIcons: Record<string, React.ReactNode> = {
   pending: <Clock className="h-3.5 w-3.5 text-gray-400" />,
   assigned: <Clock className="h-3.5 w-3.5 text-yellow-500" />,
@@ -166,8 +191,19 @@ export default function ProjectDetailPage(props: {
   const resizeStartRef = useRef<{ x: number; w: number } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timelineViewportRef = useRef<HTMLDivElement | null>(null);
+  const timelineItemsRef = useRef<TimelineEvent[]>([]);
 
+  const [timelineItems, setTimelineItems] = useState<TimelineEvent[]>([]);
+  const [timelineOldestCursor, setTimelineOldestCursor] = useState<string | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineLoadingOlder, setTimelineLoadingOlder] = useState(false);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
+  const [timelineHasNew, setTimelineHasNew] = useState(false);
+  const [timelineNewCount, setTimelineNewCount] = useState(0);
+  const [timelineInitializedScrollRight, setTimelineInitializedScrollRight] = useState(false);
+  const [timelineBootstrapped, setTimelineBootstrapped] = useState(false);
+  const [projectStatusChanging, setProjectStatusChanging] = useState(false);
   const fetchProject = useCallback(async () => {
     try {
       const res = await fetch(`/api/projects/${id}`);
@@ -181,15 +217,120 @@ export default function ProjectDetailPage(props: {
   }, [id]);
 
   useEffect(() => {
+    timelineItemsRef.current = timelineItems;
+  }, [timelineItems]);
+
+  const fetchTimelinePage = useCallback(async (opts?: { cursor?: string; limit?: number; direction?: "older" | "newer" }) => {
+    const limit = opts?.limit ?? 30;
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (opts?.cursor) params.set("cursor", opts.cursor);
+    params.set("direction", opts?.direction ?? "older");
+
+    const res = await fetch(`/api/projects/${id}/timeline?${params.toString()}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body?.error || "Failed to load timeline");
+    }
+    const data = (await res.json()) as {
+      items?: TimelineEvent[];
+      nextCursor?: string | null;
+    };
+    return {
+      items: Array.isArray(data.items) ? data.items : [],
+      nextCursor: data.nextCursor ?? null,
+    };
+  }, [id]);
+
+  const fetchTimelineFirstPage = useCallback(async () => {
+    setTimelineLoading(true);
+    setTimelineError(null);
+    try {
+      const data = await fetchTimelinePage({ limit: 30, direction: "older" });
+      const normalized = sortTimelineEventsAsc(data.items);
+      setTimelineItems((prev) => mergeTimelineEvents(normalized, prev));
+      setTimelineOldestCursor(data.nextCursor);
+      setTimelineHasNew(false);
+      setTimelineNewCount(0);
+      setTimelineInitializedScrollRight(false);
+      setTimelineBootstrapped(true);
+    } catch (error) {
+      setTimelineError(error instanceof Error ? error.message : "Failed to load timeline");
+    } finally {
+      setTimelineLoading(false);
+    }
+  }, [fetchTimelinePage]);
+
+  const fetchTimelineOlderPage = useCallback(async () => {
+    if (!timelineOldestCursor || timelineLoadingOlder) return;
+    const viewport = timelineViewportRef.current;
+    const prevWidth = viewport?.scrollWidth ?? 0;
+    const prevLeft = viewport?.scrollLeft ?? 0;
+    setTimelineLoadingOlder(true);
+    setTimelineError(null);
+    try {
+      const data = await fetchTimelinePage({
+        cursor: timelineOldestCursor,
+        limit: 30,
+        direction: "older",
+      });
+      setTimelineItems((prev) => {
+        const merged = mergeTimelineEvents(sortTimelineEventsAsc(data.items), prev);
+        return merged;
+      });
+      setTimelineOldestCursor(data.nextCursor);
+      requestAnimationFrame(() => {
+        const el = timelineViewportRef.current;
+        if (!el) return;
+        const widthDelta = el.scrollWidth - prevWidth;
+        el.scrollLeft = prevLeft + Math.max(0, widthDelta);
+      });
+    } catch (error) {
+      setTimelineError(error instanceof Error ? error.message : "Failed to load timeline");
+    } finally {
+      setTimelineLoadingOlder(false);
+    }
+  }, [fetchTimelinePage, timelineLoadingOlder, timelineOldestCursor]);
+
+  const applyNewTimelineEvents = useCallback(() => {
+    if (!timelineHasNew) return;
+    setTimelineHasNew(false);
+    setTimelineNewCount(0);
+    requestAnimationFrame(() => {
+      const viewport = timelineViewportRef.current;
+      if (!viewport) return;
+      viewport.scrollLeft = viewport.scrollWidth;
+    });
+  }, [timelineHasNew]);
+
+  useEffect(() => {
     fetchProject();
     // SSE for real-time file/doc updates
     const es = new EventSource(`/api/projects/${id}/events`);
     es.addEventListener("refresh", () => fetchProject());
-    // Poll fallback every 5s
-    pollIntervalRef.current = setInterval(fetchProject, 5000);
+    const onTimelineEvent = (evt: MessageEvent<string>) => {
+      const incoming = parseTimelineEventFromSSE(id, evt);
+      if (!incoming) return;
+      const incomingKey = getTimelineEventKey(incoming);
+      let added = false;
+      setTimelineItems((prev) => {
+        const existingMap = new Set(prev.map(getTimelineEventKey));
+        if (existingMap.has(incomingKey)) return prev;
+        added = true;
+        return mergeTimelineEvents(prev, [incoming]);
+      });
+      if (!added) {
+        const fallbackExistingMap = new Set(timelineItemsRef.current.map(getTimelineEventKey));
+        if (fallbackExistingMap.has(incomingKey)) return;
+      }
+      setTimelineHasNew(true);
+      setTimelineNewCount((n) => n + 1);
+    };
+    es.addEventListener("project.updated", onTimelineEvent as EventListener);
+    es.addEventListener("task.updated", onTimelineEvent as EventListener);
+    es.addEventListener("task.transitioned", onTimelineEvent as EventListener);
+    es.addEventListener("engine.alert", onTimelineEvent as EventListener);
     return () => {
       es.close();
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
   }, [fetchProject, id]);
 
@@ -278,6 +419,42 @@ export default function ProjectDetailPage(props: {
     }
   }, [activeTab, selectedFileId, selectedCodeFileId, project?.files]);
 
+  useEffect(() => {
+    if (activeTab !== "timeline") return;
+    if (!timelineBootstrapped && !timelineLoading) {
+      void fetchTimelineFirstPage();
+    }
+  }, [activeTab, fetchTimelineFirstPage, timelineBootstrapped, timelineLoading]);
+
+  useEffect(() => {
+    if (activeTab !== "timeline") return;
+    if (timelineLoading || timelineItems.length === 0 || timelineInitializedScrollRight) return;
+    requestAnimationFrame(() => {
+      const viewport = timelineViewportRef.current;
+      if (!viewport) return;
+      viewport.scrollLeft = viewport.scrollWidth;
+      setTimelineInitializedScrollRight(true);
+    });
+  }, [activeTab, timelineItems.length, timelineLoading, timelineInitializedScrollRight]);
+
+  const handleTimelineScroll = useCallback(() => {
+    if (activeTab !== "timeline") return;
+    const viewport = timelineViewportRef.current;
+    if (!viewport || timelineLoading) return;
+
+    const nearLeft = viewport.scrollLeft < 180;
+
+    if (nearLeft && timelineOldestCursor && !timelineLoadingOlder) {
+      void fetchTimelineOlderPage();
+    }
+  }, [
+    activeTab,
+    fetchTimelineOlderPage,
+    timelineLoading,
+    timelineLoadingOlder,
+    timelineOldestCursor,
+  ]);
+
   const handleSendMessage = async () => {
     if (!message.trim() || sending) return;
     setSending(true);
@@ -293,6 +470,27 @@ export default function ProjectDetailPage(props: {
       setSending(false);
     }
   };
+
+  const handleProjectExecutionToggle = useCallback(async () => {
+    if (!project || projectStatusChanging) return;
+    const normalized = normalizeTaskStatus(project.status);
+    const action = normalized === "paused" ? "start" : "pause";
+    setProjectStatusChanging(true);
+    try {
+      const res = await fetch(`/api/projects/${id}/${action}`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || `Failed to ${action} project`);
+      }
+      await fetchProject();
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setProjectStatusChanging(false);
+    }
+  }, [fetchProject, id, project, projectStatusChanging]);
 
   if (loading) {
     return (
@@ -324,28 +522,43 @@ export default function ProjectDetailPage(props: {
   const projectTeamEmployees = project.company.employees.filter((e) =>
     projectTeamEmployeeIds.has(e.id)
   );
+  const timelineLanes = buildProjectTimelineLanes(
+    project.company.employees,
+    projectTeamEmployees,
+    timelineItems
+  );
+  const taskAssigneeById = buildTaskAssigneeMap(allTasks);
+  const timelineLaneEvents = buildTimelineLaneEvents(
+    project.company.employees,
+    timelineLanes,
+    timelineItems,
+    taskAssigneeById
+  );
 
-  const completedTasks = allTasks.filter((t) => t.status === "completed");
+  const completedTasks = allTasks.filter(
+    (t) => normalizeTaskStatus(t.status) === "done"
+  );
   const progressPercent =
     allTasks.length > 0
       ? Math.round((completedTasks.length / allTasks.length) * 100)
       : 0;
 
-  // Group tasks by status for kanban (must match DB: pending, assigned, in_progress, review, completed, blocked)
+  // Group tasks by normalized status for kanban (must match DB: todo, in_progress, review, done, blocked, canceled)
   const kanbanStatusOrder = [
-    "pending",
-    "assigned",
+    "todo",
     "in_progress",
     "review",
-    "completed",
+    "done",
     "blocked",
+    "canceled",
   ] as const;
   const tasksByStatus: Record<string, Task[]> = Object.fromEntries(
     kanbanStatusOrder.map((s) => [s, []])
   ) as Record<string, Task[]>;
   for (const task of allTasks) {
+    const normalizedStatus = normalizeTaskStatus(task.status);
     const group =
-      tasksByStatus[task.status] ?? tasksByStatus.pending;
+      tasksByStatus[normalizedStatus] ?? tasksByStatus.todo;
     group.push(task);
   }
 
@@ -408,6 +621,21 @@ export default function ProjectDetailPage(props: {
         description={project.description || undefined}
         actions={
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleProjectExecutionToggle}
+              disabled={projectStatusChanging || normalizeTaskStatus(project.status) === "done" || normalizeTaskStatus(project.status) === "canceled"}
+            >
+              {projectStatusChanging ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : normalizeTaskStatus(project.status) === "paused" ? (
+                <Play className="h-4 w-4 mr-1" />
+              ) : (
+                <Pause className="h-4 w-4 mr-1" />
+              )}
+              {normalizeTaskStatus(project.status) === "paused" ? "Resume" : "Pause"}
+            </Button>
             <Badge variant="outline" className={getProjectStatusColor(project.status)}>
               {t(`taskStatus.${project.status}`)}
             </Badge>
@@ -472,8 +700,8 @@ export default function ProjectDetailPage(props: {
               <TabsTrigger value="kanban">
                 {t("project.kanban")} ({allTasks.length})
               </TabsTrigger>
-              <TabsTrigger value="tasks">
-                {t("project.taskList")}
+              <TabsTrigger value="timeline">
+                {t("project.timeline")}
               </TabsTrigger>
               <TabsTrigger value="team">{t("project.team")}</TabsTrigger>
             </TabsList>
@@ -933,19 +1161,180 @@ export default function ProjectDetailPage(props: {
             )}
           </TabsContent>
 
-          {/* Tasks List Tab */}
-          <TabsContent value="tasks" className="flex-1 m-0 overflow-auto p-6">
-            <div className="max-w-4xl mx-auto">
-              {(project.tasks ?? []).length === 0 ? (
+          {/* Timeline Tab */}
+          <TabsContent value="timeline" className="flex-1 m-0 overflow-auto p-6">
+            <div className="space-y-3 h-full min-h-0">
+              {timelineHasNew && (
+                <div className="sticky top-0 z-10 flex justify-center">
+                  <Button
+                    size="sm"
+                    onClick={applyNewTimelineEvents}
+                    className="rounded-full shadow-sm"
+                  >
+                    {t("project.timelineNewEvents")} ({timelineNewCount}) · {t("project.timelineJumpLatest")}
+                  </Button>
+                </div>
+              )}
+              <div className="text-xs text-muted-foreground">
+                {t("project.timelineHorizontalHint")}
+              </div>
+
+              {timelineLoading ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
-                  <p>{t("project.waitingForTasks")}</p>
+                  <p>{t("project.timelineLoading")}</p>
+                </div>
+              ) : timelineError ? (
+                <div className="text-center py-10 border rounded-lg bg-muted/20">
+                  <p className="text-sm text-destructive mb-3">
+                    {t("project.timelineLoadFailed")}: {timelineError}
+                  </p>
+                  <Button size="sm" variant="outline" onClick={fetchTimelineFirstPage}>
+                    {t("project.timelineRetry")}
+                  </Button>
+                </div>
+              ) : timelineItems.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <p>{t("project.timelineEmpty")}</p>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {(project.tasks ?? []).map((task) => (
-                    <TaskCard key={task.id} task={task} />
-                  ))}
+                <div className="h-[calc(100vh-280px)] min-h-[420px] overflow-hidden border rounded-lg bg-slate-50/60 dark:bg-slate-950/40">
+                  <div className="flex h-full min-h-0 overflow-y-auto">
+                    <div
+                      className="shrink-0 border-r border-amber-300/80 bg-amber-100/80 dark:border-amber-700/70 dark:bg-amber-900/35"
+                      style={{ width: TIMELINE_LANE_WIDTH }}
+                    >
+                      {timelineLanes.map((lane) => (
+                        <div
+                          key={`lane-${lane.employeeId}`}
+                          className="flex items-center border-b px-3 py-3"
+                          style={{ minHeight: TIMELINE_ROW_MIN_HEIGHT }}
+                        >
+                          <div
+                            className="shrink-0 rounded-md border border-amber-400/80 dark:border-amber-700/80 bg-amber-100/95 dark:bg-amber-900/55 px-3 py-2 shadow-sm"
+                            style={{ width: TIMELINE_CARD_WIDTH, height: TIMELINE_CARD_HEIGHT }}
+                          >
+                            <div className="text-sm font-medium truncate">{lane.name}</div>
+                            <div className="text-xs text-muted-foreground truncate">{lane.roleTitle}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div
+                      ref={timelineViewportRef}
+                      onScroll={handleTimelineScroll}
+                      className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden"
+                    >
+                      <div className="relative min-w-max">
+                        {timelineLanes.map((lane) => {
+                          const events = timelineLaneEvents[lane.employeeId] ?? [];
+                          return (
+                            <div
+                              key={`events-${lane.employeeId}`}
+                              className="relative border-b"
+                              style={{ minHeight: TIMELINE_ROW_MIN_HEIGHT }}
+                            >
+                              <div className="pointer-events-none absolute left-0 right-0 top-1/2 border-t border-dashed border-muted-foreground/30" />
+                              <div
+                                className="relative z-10 flex items-center gap-2 px-3 py-3"
+                                style={{ minHeight: TIMELINE_ROW_MIN_HEIGHT }}
+                              >
+                                {events.length === 0 ? (
+                                  <div
+                                    className="shrink-0 rounded-md border border-dashed bg-muted/20 text-[11px] text-muted-foreground flex items-center justify-center"
+                                    style={{ width: TIMELINE_CARD_WIDTH, height: TIMELINE_CARD_HEIGHT }}
+                                  >
+                                    {t("project.timelineEmptyLane")}
+                                  </div>
+                                ) : (
+                                  <TooltipProvider delayDuration={120}>
+                                    <div className="flex items-center gap-2">
+                                      {events.map((event, index) => {
+                                        const eventTitle = formatTimelineEventTitle(event);
+                                        const eventDetail = formatTimelineEventDetail(event);
+                                        const eventTime = formatTimelineTimestamp(event.createdAt);
+                                        return (
+                                          <div key={getTimelineEventKey(event)} className="flex items-center gap-2">
+                                            {index > 0 && <TimelineConnector />}
+                                            <Tooltip>
+                                              <TooltipTrigger asChild>
+                                                <Card
+                                                  className="shrink-0 overflow-hidden border-blue-200/80 dark:border-blue-700/80 bg-blue-50/90 dark:bg-blue-950/40 shadow-sm"
+                                                  style={{ width: TIMELINE_CARD_WIDTH, height: TIMELINE_CARD_HEIGHT }}
+                                                >
+                                                  <CardContent className="flex h-full flex-col items-center justify-center gap-1.5 p-3 text-center">
+                                                    <div className="text-sm font-semibold leading-5 line-clamp-1" title={eventTitle}>
+                                                      {eventTitle}
+                                                    </div>
+                                                    <div className="text-xs leading-4 text-slate-700/90 dark:text-slate-300/90 line-clamp-2" title={eventDetail}>
+                                                      {eventDetail}
+                                                    </div>
+                                                    <div className="text-xs font-medium text-muted-foreground">{eventTime}</div>
+                                                    <div className="flex w-full items-center justify-center gap-1.5">
+                                                      <span className="max-w-[40%] truncate text-[10px] text-muted-foreground">{event.actor || "-"}</span>
+                                                      {event.taskId ? (
+                                                        <Badge variant="outline" className="max-w-[56%] truncate text-[10px]">
+                                                          {shortTaskId(event.taskId)}
+                                                        </Badge>
+                                                      ) : null}
+                                                    </div>
+                                                  </CardContent>
+                                                </Card>
+                                              </TooltipTrigger>
+                                              <TooltipContent side="top" align="start" className="max-w-[460px] whitespace-pre-wrap">
+                                                <div className="space-y-1 text-xs">
+                                                  <div className="font-semibold">{eventTitle}</div>
+                                                  <div className="text-muted-foreground">{eventDetail}</div>
+                                                  <div>时间: {eventTime}</div>
+                                                  <div>执行者: {event.actor || "-"}</div>
+                                                  {event.taskId ? <div>任务: {event.taskId}</div> : null}
+                                                  {event.payload ? (
+                                                    <pre className="max-h-40 overflow-auto rounded border bg-muted/40 p-2 text-[10px] leading-4">{event.payload}</pre>
+                                                  ) : null}
+                                                </div>
+                                              </TooltipContent>
+                                            </Tooltip>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </TooltipProvider>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="px-3 py-2 border-t text-xs text-muted-foreground flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      {timelineLoadingOlder && (
+                        <span className="inline-flex items-center gap-1">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          {t("project.timelineLoadingOlder")}
+                        </span>
+                      )}
+                      {!timelineOldestCursor && !timelineLoadingOlder && (
+                        <span>{t("project.timelineNoOlder")}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          const viewport = timelineViewportRef.current;
+                          if (!viewport) return;
+                          viewport.scrollLeft = viewport.scrollWidth;
+                        }}
+                      >
+                        {t("project.timelineJumpLatest")}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -1230,9 +1619,25 @@ function KanbanCard({ task }: { task: Task }) {
   );
 }
 
+function TimelineConnector() {
+  return (
+    <svg
+      width="28"
+      height="20"
+      viewBox="0 0 28 20"
+      className="shrink-0 text-muted-foreground/80"
+      aria-hidden="true"
+    >
+      <line x1="2" y1="10" x2="22" y2="10" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M22 6.5L26 10L22 13.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function TaskCard({ task }: { task: Task }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const normalizedStatus = normalizeTaskStatus(task.status);
 
   return (
     <Card>
@@ -1240,7 +1645,7 @@ function TaskCard({ task }: { task: Task }) {
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              {statusIcons[task.status]}
+              {statusIcons[normalizedStatus]}
               <span className="font-medium text-sm">{task.title}</span>
               <Badge variant="outline" className="text-xs">
                 P{task.priority}
@@ -1267,10 +1672,10 @@ function TaskCard({ task }: { task: Task }) {
             )}
           </div>
           <Badge
-            variant={statusVariant[task.status] ?? "secondary"}
+            variant={statusVariant[normalizedStatus] ?? "secondary"}
             className="text-xs shrink-0"
           >
-            {t(`taskStatus.${task.status}`)}
+            {t(`taskStatus.${normalizedStatus}`)}
           </Badge>
         </div>
 
@@ -1299,10 +1704,10 @@ function TaskCard({ task }: { task: Task }) {
           <div className="mt-3 ml-6 space-y-2 border-l-2 pl-4">
             {task.subTasks.map((sub) => (
               <div key={sub.id} className="flex items-center gap-2 text-sm">
-                {statusIcons[sub.status]}
+                {statusIcons[normalizeTaskStatus(sub.status)]}
                 <span
                   className={
-                    sub.status === "completed"
+                    normalizeTaskStatus(sub.status) === "done"
                       ? "line-through text-muted-foreground"
                       : ""
                   }
@@ -1321,6 +1726,346 @@ function TaskCard({ task }: { task: Task }) {
       </CardContent>
     </Card>
   );
+}
+
+function getTimelineEventKey(event: TimelineEvent): string {
+  if (event.id) return event.id;
+  return `${event.eventType}|${event.createdAt}|${event.summary}|${event.actor}|${event.taskId ?? ""}`;
+}
+
+function mergeTimelineEvents(...chunks: TimelineEvent[][]): TimelineEvent[] {
+  const map = new Map<string, TimelineEvent>();
+  for (const chunk of chunks) {
+    for (const item of chunk) {
+      map.set(getTimelineEventKey(item), item);
+    }
+  }
+  return sortTimelineEventsAsc(Array.from(map.values()));
+}
+
+function sortTimelineEventsAsc(events: TimelineEvent[]): TimelineEvent[] {
+  return [...events].sort((a, b) => {
+    const timeDiff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    if (timeDiff !== 0) return timeDiff;
+    return getTimelineEventKey(a).localeCompare(getTimelineEventKey(b));
+  });
+}
+
+function buildProjectTimelineLanes(
+  allEmployees: Employee[],
+  projectTeamEmployees: Employee[],
+  events: TimelineEvent[]
+): TimelineLane[] {
+  const baseline = new Map(projectTeamEmployees.map((emp) => [emp.id, emp]));
+  const allByID = new Map(allEmployees.map((emp) => [emp.id, emp]));
+  const lanesByEmployeeID = new Map<string, TimelineLane>();
+  const eventOrder = [...events].reverse();
+
+  for (const event of eventOrder) {
+    const actor = event.actor.trim();
+    const laneEmployee = resolveTimelineActorEmployee(actor, allEmployees);
+    const eventAt = new Date(event.createdAt).getTime();
+    if (laneEmployee) {
+      lanesByEmployeeID.set(laneEmployee.id, {
+        employeeId: laneEmployee.id,
+        name: laneEmployee.name,
+        roleTitle: laneEmployee.role.title,
+        lastActiveAt: eventAt,
+      });
+    }
+  }
+
+  for (const [, employee] of baseline) {
+    if (!lanesByEmployeeID.has(employee.id)) {
+      lanesByEmployeeID.set(employee.id, {
+        employeeId: employee.id,
+        name: employee.name,
+        roleTitle: employee.role.title,
+        lastActiveAt: 0,
+      });
+    }
+  }
+  return Array.from(lanesByEmployeeID.values()).sort((a, b) => {
+    const aEmp = allByID.get(a.employeeId);
+    const bEmp = allByID.get(b.employeeId);
+    const aIsCEO = aEmp?.role.name === "ceo" || a.roleTitle.toLowerCase().includes("ceo");
+    const bIsCEO = bEmp?.role.name === "ceo" || b.roleTitle.toLowerCase().includes("ceo");
+    if (aIsCEO && !bIsCEO) return -1;
+    if (!aIsCEO && bIsCEO) return 1;
+    if (a.lastActiveAt !== b.lastActiveAt) return b.lastActiveAt - a.lastActiveAt;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function buildTimelineLaneEvents(
+  employees: Employee[],
+  lanes: TimelineLane[],
+  events: TimelineEvent[],
+  taskAssigneeByID: Map<string, string>
+): Record<string, TimelineEvent[]> {
+  const laneEvents: Record<string, TimelineEvent[]> = {};
+  const laneSet = new Set(lanes.map((lane) => lane.employeeId));
+
+  for (const lane of lanes) {
+    laneEvents[lane.employeeId] = [];
+  }
+
+  for (const event of events) {
+    const employee = resolveTimelineActorEmployee(event.actor, employees);
+    if (employee && laneSet.has(employee.id)) {
+      laneEvents[employee.id].push(event);
+      continue;
+    }
+    if (event.taskId) {
+      const assigneeID = taskAssigneeByID.get(event.taskId);
+      if (assigneeID && laneSet.has(assigneeID)) {
+        laneEvents[assigneeID].push(event);
+        continue;
+      }
+    }
+  }
+
+  for (const lane of lanes) {
+    laneEvents[lane.employeeId].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+  }
+
+  return laneEvents;
+}
+
+function resolveTimelineActorEmployee(actor: string, employees: Employee[]): Employee | null {
+  if (!actor) return null;
+  const normalized = actor.trim();
+  const lower = normalized.toLowerCase();
+
+  const byID = new Map(employees.map((e) => [e.id, e]));
+  if (byID.has(normalized)) return byID.get(normalized) ?? null;
+
+  const parts = normalized.split(":");
+  const maybeID = parts.length >= 2 ? parts[parts.length - 1] : "";
+  if (maybeID && byID.has(maybeID)) return byID.get(maybeID) ?? null;
+
+  const nameOnly = normalized.includes("(")
+    ? normalized.slice(0, normalized.indexOf("(")).trim()
+    : normalized;
+  const byName = employees.find((e) => e.name.toLowerCase() === nameOnly.toLowerCase());
+  if (byName) return byName;
+
+  if (lower === "ceo") {
+    return employees.find((e) => e.role.name === "ceo" || e.role.title.toLowerCase().includes("ceo")) ?? null;
+  }
+  return null;
+}
+
+function buildTaskAssigneeMap(tasks: Task[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const task of tasks) {
+    const assignee = task.assignments?.[0]?.employee?.id;
+    if (assignee) map.set(task.id, assignee);
+  }
+  return map;
+}
+
+function parseTimelineEventFromSSE(projectID: string, evt: MessageEvent<string>): TimelineEvent | null {
+  if (!evt?.data) return null;
+  try {
+    const raw = JSON.parse(evt.data) as Record<string, unknown>;
+    const id = typeof raw.id === "string" && raw.id ? raw.id : `sse-${Date.now()}`;
+    const eventType = typeof raw.eventType === "string" && raw.eventType
+      ? raw.eventType
+      : typeof raw.type === "string"
+        ? raw.type
+        : "task.updated";
+    const createdAtRaw = raw.createdAt;
+    const createdAt = typeof createdAtRaw === "string"
+      ? createdAtRaw
+      : new Date().toISOString();
+    const senderID = typeof raw.senderId === "string" ? raw.senderId : "";
+    const senderType = typeof raw.senderType === "string" ? raw.senderType : "";
+    const actor = senderID || senderType || "system";
+    const summary = typeof raw.summary === "string"
+      ? raw.summary
+      : typeof raw.content === "string"
+        ? raw.content
+        : eventType;
+    let payload: string | null = null;
+    if (raw.metadata && typeof raw.metadata === "object") {
+      payload = JSON.stringify(raw.metadata);
+    }
+    const taskId = typeof raw.taskId === "string" ? raw.taskId : null;
+    return {
+      id,
+      projectId: projectID,
+      taskId,
+      eventType,
+      actor,
+      summary,
+      payload,
+      createdAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function shortTaskId(taskId: string): string {
+  if (taskId.length <= 10) return taskId;
+  return `${taskId.slice(0, 6)}...${taskId.slice(-4)}`;
+}
+
+function formatTimelineEventTitle(event: TimelineEvent): string {
+  const type = (event.eventType || "").trim();
+  switch (type) {
+    case "task.transition":
+    case "task.transitioned":
+      return "任务状态变更";
+    case "project.transition":
+      return "项目状态变更";
+    case "project.updated":
+      return "项目更新";
+    case "task.updated":
+      return "任务执行更新";
+    case "engine.alert":
+      return "引擎告警";
+    default:
+      if (type !== "") return type;
+      return "时间线事件";
+  }
+}
+
+function formatTimelineEventDetail(event: TimelineEvent): string {
+  const payload = parseTimelinePayload(event.payload);
+  const reason = readStringField(payload, "reason");
+  const from = readStringField(payload, "from");
+  const to = readStringField(payload, "to");
+
+  if (event.eventType === "task.transition" || event.eventType === "task.transitioned") {
+    const parts: string[] = [];
+    if (from && to) parts.push(`状态 ${from} -> ${to}`);
+    if (reason) parts.push(`原因: ${reason}`);
+    if (parts.length > 0) return parts.join(" · ");
+  }
+
+  if (event.eventType === "project.transition" || event.eventType === "project.updated") {
+    const parts: string[] = [];
+    if (from && to) parts.push(`项目状态 ${from} -> ${to}`);
+    if (reason) parts.push(`原因: ${reason}`);
+    if (parts.length > 0) return parts.join(" · ");
+  }
+
+  if (event.eventType === "task.updated") {
+    const toolCalls = readNumberField(payload, "toolCalls");
+    const createdFiles = readNumberField(payload, "createdFiles");
+    const enteredReview = readBoolField(payload, "enteredReview");
+    const emptyRound = readBoolField(payload, "emptyRound");
+    const parts: string[] = [];
+    if (toolCalls !== null) parts.push(`工具调用 ${toolCalls}`);
+    if (createdFiles !== null) parts.push(`新文件 ${createdFiles}`);
+    if (enteredReview !== null) parts.push(enteredReview ? "已提交审核" : "继续执行");
+    if (emptyRound === true) parts.push("本轮无有效产出");
+    if (reason) parts.push(`原因: ${reason}`);
+    if (parts.length > 0) return parts.join(" · ");
+  }
+
+  const summary = (event.summary || "").trim();
+  if (summary !== "" && !looksLikeTimestamp(summary)) {
+    return summary;
+  }
+
+  if (reason) return `原因: ${reason}`;
+  if (payload) {
+    const compact = summarizePayload(payload);
+    if (compact !== "") return compact;
+  }
+  const actor = (event.actor || "").trim();
+  if (actor !== "") return `执行者: ${actor}`;
+  return "暂无详细说明";
+}
+
+function parseTimelinePayload(payload: string | null): Record<string, unknown> | null {
+  if (!payload) return null;
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function readStringField(payload: Record<string, unknown> | null, key: string): string | null {
+  if (!payload) return null;
+  const value = payload[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+function readNumberField(payload: Record<string, unknown> | null, key: string): number | null {
+  if (!payload) return null;
+  const value = payload[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+
+function readBoolField(payload: Record<string, unknown> | null, key: string): boolean | null {
+  if (!payload) return null;
+  const value = payload[key];
+  if (typeof value === "boolean") return value;
+  return null;
+}
+
+function summarizePayload(payload: Record<string, unknown>): string {
+  const keys = Object.keys(payload).slice(0, 3);
+  const parts: string[] = [];
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string") {
+      parts.push(`${key}: ${value}`);
+      continue;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      parts.push(`${key}: ${String(value)}`);
+      continue;
+    }
+  }
+  return parts.join(" · ");
+}
+
+function looksLikeTimestamp(value: string): boolean {
+  const s = value.trim();
+  if (s === "") return false;
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/.test(s)) return true;
+  const parsed = Date.parse(s);
+  return Number.isFinite(parsed) && /\d{4}/.test(s);
+}
+
+function formatTimelineTimestamp(createdAt: string): string {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) {
+    return createdAt;
+  }
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function normalizeTaskStatus(status: string): string {
+  switch (status) {
+    case "created":
+    case "ready":
+    case "pending":
+    case "assigned":
+      return "todo";
+    case "completed":
+      return "done";
+    case "cancelled":
+      return "canceled";
+    default:
+      return status;
+  }
 }
 
 function flattenTasks(tasks: Task[]): Task[] {

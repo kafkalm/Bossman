@@ -7,7 +7,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const res = await fetch(`${getGoEngineURL()}/engine/projects/${id}/start`, {
+    const res = await fetch(`${getGoEngineURL()}/engine/projects/${id}/pause`, {
       method: "POST",
     });
     if (!res.ok) {
@@ -17,7 +17,7 @@ export async function POST(
     return NextResponse.json(await res.json());
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to start project" },
+      { error: error instanceof Error ? error.message : "Failed to pause project" },
       { status: 500 }
     );
   }

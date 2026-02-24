@@ -33,11 +33,20 @@ func main() {
 	svc := engine.NewService(database, msgBus, llmRegistry, ws)
 
 	ctx := context.Background()
+	if err := database.EnsureRuntimeTables(ctx); err != nil {
+		log.Fatalf("failed to ensure runtime tables: %v", err)
+	}
+	if err := database.NormalizeLegacyStatuses(ctx); err != nil {
+		log.Fatalf("failed to normalize legacy statuses: %v", err)
+	}
 
 	// Load all employees, instantiate CEO/Worker, register, and start loops
 	employees, err := database.GetAllEmployeesWithRoles(ctx)
 	if err != nil {
 		log.Fatalf("failed to load employees: %v", err)
+	}
+	for _, emp := range employees {
+		_ = database.SetEmployeeStatus(ctx, emp.ID, "idle")
 	}
 	for _, emp := range employees {
 		var e engine.Employee

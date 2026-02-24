@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/kafkalm/bossman/agent-engine/internal/db"
 	"github.com/kafkalm/bossman/agent-engine/internal/llm"
@@ -44,6 +45,19 @@ func (s *Service) BuildAgentContext(ctx context.Context, emp *db.EmployeeWithRol
 		}
 	}
 
+	var taskID *string
+	if task != nil {
+		taskID = &task.ID
+	}
+	if timeline, err := s.db.GetTimelineEvents(ctx, project.ID, taskID, 8); err == nil && len(timeline) > 0 {
+		var sb strings.Builder
+		sb.WriteString("Recent timeline events:\n")
+		for _, ev := range timeline {
+			sb.WriteString(fmt.Sprintf("- [%s] %s\n", ev.EventType, ev.Summary))
+		}
+		messages = append(messages, llm.ChatMessage{Role: "user", Content: sb.String()})
+	}
+
 	return trimContext(messages), nil
 }
 
@@ -53,14 +67,22 @@ func formatProjectContext(emp *db.EmployeeWithRole, project *db.Project, task *d
 
 	if task != nil {
 		s += fmt.Sprintf("## Your Current Task: %s\n%s\n\n", task.Title, task.Description)
+		s += "## Delivery Contract (Mandatory)\n"
+		s += "In your first round on this task, do all of the following:\n"
+		s += "1. Write an execution plan with concrete steps and acceptance checks.\n"
+		s += "2. Save the plan using save_to_workspace (e.g. `plan.md`).\n"
+		s += "3. Produce concrete deliverable files in workspace.\n"
+		s += "4. Include a self-check summary: requirement coverage, risks, and next step.\n\n"
+		s += "5. Only when task is complete, call submit_for_review with file paths + summary + self-check.\n\n"
 	}
 
 	s += "## Your Workspace\n"
 	s += "You have a personal workspace (your folder in the project's Document/Code tab). Save your work there as you go:\n"
 	s += "- Use **save_to_workspace** to save drafts, outlines, research notes, and intermediate code.\n"
-	s += "- Use **create_file** for final deliverables to submit to the CEO.\n"
+	s += "- Use **create_file** for concrete deliverable files.\n"
+	s += "- Use **submit_for_review** only after all required deliverables are complete.\n"
 	s += "- Use **execute_command** to run shell commands (build, test, install packages, etc.) in the project workspace.\n\n"
-	s += "Please complete your assigned work. Be thorough and professional."
+	s += "Please complete your assigned work. Be thorough, explicit, action-oriented, and requirement-driven."
 
 	return s
 }

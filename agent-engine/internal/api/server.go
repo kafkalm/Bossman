@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 	"github.com/kafkalm/bossman/agent-engine/internal/bus"
+	"github.com/kafkalm/bossman/agent-engine/internal/db"
 	"github.com/kafkalm/bossman/agent-engine/internal/engine"
 )
 
@@ -16,6 +17,9 @@ type Pool interface {
 	IsRunning(projectID string) bool
 	SendFounderMessage(projectID, message string) error
 	SnapshotProject(projectID string) (*engine.ProjectSnapshot, error)
+	GetTimeline(projectID string, taskID *string, limit int) ([]db.TimelineEvent, error)
+	GetTimelinePage(projectID string, taskID *string, limit int, cursor string, direction string) (*engine.TimelinePage, error)
+	CommandProject(projectID, action string, payload map[string]interface{}) error
 }
 
 // NewRouter creates the chi HTTP router for the Go engine.
@@ -35,7 +39,10 @@ func NewRouter(pool Pool, msgBus *bus.Bus) http.Handler {
 
 	r.Get("/engine/health", healthHandler)
 	r.Route("/engine/projects/{id}", func(r chi.Router) {
+		r.Post("/command", h.commandProject)
+		r.Get("/timeline", h.projectTimeline)
 		r.Post("/start", h.startProject)
+		r.Post("/pause", h.pauseProject)
 		r.Post("/stop", h.stopProject)
 		r.Get("/status", h.projectStatus)
 		r.Get("/snapshot", h.projectSnapshot)
