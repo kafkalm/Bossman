@@ -2,15 +2,41 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
 
-	"github.com/kafkalm/bossman/agent-engine/internal/agent"
 	"github.com/kafkalm/bossman/agent-engine/internal/bus"
 	"github.com/kafkalm/bossman/agent-engine/internal/db"
+	"github.com/kafkalm/bossman/agent-engine/internal/llm"
 	"github.com/kafkalm/bossman/agent-engine/internal/workspace"
 )
+
+const maxContextMessages = 50
+const projectContextMessages = 20
+
+// RunOptions is the input to Service.Run.
+// Callers may supply pre-loaded Employee, Project, or Task to skip redundant
+// DB round-trips; the corresponding ID fields are only used when the
+// pre-loaded object is nil.
+type RunOptions struct {
+	Employee            *db.EmployeeWithRole
+	Project             *db.Project
+	Task                *db.Task
+	EmployeeID          string
+	ProjectID           string
+	TaskID              *string
+	Tools               []llm.ToolDefinition
+	AdditionalMessages  []llm.ChatMessage
+}
+
+// RunResult is the output of Service.Run.
+type RunResult struct {
+	Content   string
+	ToolCalls []llm.ToolCall
+	Usage     llm.TokenUsageInfo
+}
 
 // ProjectRunState is the abstraction passed to RunCeoCycle for inter-employee signaling.
 type ProjectRunState interface {
@@ -24,7 +50,7 @@ type Service struct {
 	// infrastructure
 	db        *db.DB
 	bus       *bus.Bus
-	runtime   *agent.Runtime
+	llm       *llm.Registry
 	workspace *workspace.Workspace
 
 	mu      sync.RWMutex
@@ -35,11 +61,11 @@ type Service struct {
 }
 
 // NewService creates a new Service.
-func NewService(database *db.DB, msgBus *bus.Bus, runtime *agent.Runtime, ws *workspace.Workspace) *Service {
+func NewService(database *db.DB, msgBus *bus.Bus, registry *llm.Registry, ws *workspace.Workspace) *Service {
 	return &Service{
 		db:        database,
 		bus:       msgBus,
-		runtime:   runtime,
+		llm:       registry,
 		workspace: ws,
 		workers:   make(map[string]*Worker),
 		ceos:      make(map[string]*CEO),
@@ -135,4 +161,179 @@ func (s *Service) SendFounderMessage(projectID, message string) error {
 	s.founderMessages.Store(projectID, message)
 	s.TriggerCEOForProject(projectID)
 	return nil
+}
+
+// Run executes an agent: resolves any missing context, calls LLM, records token usage.
+func (s *Service) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
+	emp := opts.Employee
+	if emp == nil {
+		loaded, err := s.db.GetEmployee(ctx, opts.EmployeeID)
+		if err != nil {
+			return nil, fmt.Errorf("load employee: %w", err)
+		}
+		emp = loaded
+	}
+
+	project := opts.Project
+	if project == nil {
+		loaded, err := s.db.GetProject(ctx, opts.ProjectID)
+		if err != nil {
+			return nil, fmt.Errorf("load project: %w", err)
+		}
+		project = loaded
+	}
+
+	task := opts.Task
+	if task == nil && opts.TaskID != nil {
+		loaded, err := s.db.GetTask(ctx, *opts.TaskID)
+		if err != nil {
+			return nil, fmt.Errorf("load task: %w", err)
+		}
+		task = &loaded.Task
+	}
+
+	var modelCfg llm.ModelConfig
+	if err := json.Unmarshal([]byte(emp.RoleModelConfig), &modelCfg); err != nil {
+		return nil, fmt.Errorf("parse model config: %w", err)
+	}
+
+	messages, err := s.BuildAgentContext(ctx, emp, project, task)
+	if err != nil {
+		return nil, fmt.Errorf("build context: %w", err)
+	}
+
+	messages = append(messages, opts.AdditionalMessages...)
+
+	_ = s.db.SetEmployeeStatus(ctx, emp.ID, "busy")
+	defer func() {
+		_ = s.db.SetEmployeeStatus(ctx, emp.ID, "idle")
+	}()
+
+	resp, err := s.llm.Call(modelCfg, messages, emp.RoleSystemPrompt, opts.Tools)
+	if err != nil {
+		return nil, fmt.Errorf("llm call: %w", err)
+	}
+
+	projectID := project.ID
+	_ = s.db.RecordTokenUsage(ctx, emp.ID, &projectID,
+		resp.Usage.Model, resp.Usage.Provider,
+		resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.Cost)
+
+	if resp.Content != "" && task == nil {
+		_, _ = s.db.CreateMessage(ctx, project.ID, nil, &emp.ID, "agent", resp.Content, nil)
+	}
+
+	return &RunResult{
+		Content:   resp.Content,
+		ToolCalls: resp.ToolCalls,
+		Usage:     resp.Usage,
+	}, nil
+}
+
+// BuildAgentContext assembles the message history for an agent LLM call.
+func (s *Service) BuildAgentContext(ctx context.Context, emp *db.EmployeeWithRole, project *db.Project, task *db.Task) ([]llm.ChatMessage, error) {
+	var messages []llm.ChatMessage
+
+	messages = append(messages, llm.ChatMessage{
+		Role:    "user",
+		Content: formatProjectContext(emp, project, task),
+	})
+
+	if task != nil {
+		projectMsgs, err := s.db.GetProjectMessages(ctx, project.ID, projectContextMessages)
+		if err != nil {
+			return nil, fmt.Errorf("project messages: %w", err)
+		}
+		taskMsgs, err := s.db.GetTaskMessages(ctx, task.ID)
+		if err != nil {
+			return nil, fmt.Errorf("task messages: %w", err)
+		}
+
+		merged := mergeAndDedup(projectMsgs, taskMsgs)
+		for _, msg := range merged {
+			messages = append(messages, convertDBMessage(msg, emp.ID))
+		}
+	} else {
+		projectMsgs, err := s.db.GetProjectMessages(ctx, project.ID, maxContextMessages)
+		if err != nil {
+			return nil, fmt.Errorf("project messages: %w", err)
+		}
+		for _, msg := range projectMsgs {
+			messages = append(messages, convertDBMessage(msg, emp.ID))
+		}
+	}
+
+	return trimContext(messages), nil
+}
+
+func formatProjectContext(emp *db.EmployeeWithRole, project *db.Project, task *db.Task) string {
+	s := fmt.Sprintf("You are %s, serving as %s in this project.\n\n", emp.Name, emp.RoleTitle)
+	s += fmt.Sprintf("## Project: %s\n%s\n\n", project.Name, project.Description)
+
+	if task != nil {
+		s += fmt.Sprintf("## Your Current Task: %s\n%s\n\n", task.Title, task.Description)
+	}
+
+	s += "## Your Workspace\n"
+	s += "You have a personal workspace (your folder in the project's Document/Code tab). Save your work there as you go:\n"
+	s += "- Use **save_to_workspace** to save drafts, outlines, research notes, and intermediate code.\n"
+	s += "- Use **create_file** for final deliverables to submit to the CEO.\n"
+	s += "- Use **execute_command** to run shell commands (build, test, install packages, etc.) in the project workspace.\n\n"
+	s += "Please complete your assigned work. Be thorough and professional."
+
+	return s
+}
+
+func convertDBMessage(msg db.Message, selfEmployeeID string) llm.ChatMessage {
+	if msg.SenderType == "agent" && msg.SenderID != nil && *msg.SenderID == selfEmployeeID {
+		return llm.ChatMessage{Role: "assistant", Content: msg.Content}
+	}
+	label := senderLabel(msg)
+	return llm.ChatMessage{
+		Role:    "user",
+		Content: fmt.Sprintf("[%s]: %s", label, msg.Content),
+	}
+}
+
+func senderLabel(msg db.Message) string {
+	switch msg.SenderType {
+	case "founder":
+		return "Founder"
+	case "system":
+		return "System"
+	default:
+		return "Agent"
+	}
+}
+
+func mergeAndDedup(a, b []db.Message) []db.Message {
+	seen := make(map[string]bool, len(a)+len(b))
+	var result []db.Message
+	for _, m := range a {
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			result = append(result, m)
+		}
+	}
+	for _, m := range b {
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			result = append(result, m)
+		}
+	}
+	for i := 1; i < len(result); i++ {
+		for j := i; j > 0 && result[j].CreatedAt.Before(result[j-1].CreatedAt); j-- {
+			result[j], result[j-1] = result[j-1], result[j]
+		}
+	}
+	return result
+}
+
+func trimContext(messages []llm.ChatMessage) []llm.ChatMessage {
+	if len(messages) <= maxContextMessages {
+		return messages
+	}
+	first := messages[0]
+	recent := messages[len(messages)-(maxContextMessages-1):]
+	return append([]llm.ChatMessage{first}, recent...)
 }

@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/kafkalm/bossman/agent-engine/internal/agent"
 	"github.com/kafkalm/bossman/agent-engine/internal/api"
 	"github.com/kafkalm/bossman/agent-engine/internal/bus"
 	"github.com/kafkalm/bossman/agent-engine/internal/config"
@@ -31,8 +30,7 @@ func main() {
 	llmRegistry := llm.NewRegistry(cfg)
 	ws := workspace.New(cfg.WorkspaceDir)
 
-	runtime := agent.New(database, llmRegistry)
-	svc := engine.NewService(database, msgBus, runtime, ws)
+	svc := engine.NewService(database, msgBus, llmRegistry, ws)
 
 	ctx := context.Background()
 
