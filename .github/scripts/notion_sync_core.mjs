@@ -48,7 +48,31 @@ export function buildGithubItemKey(repo, number) {
   return `${repo}#${number}`;
 }
 
-export function buildTaskProperties({ repo, number, title, url, issueState, labels = [], body = '', prUrl = null, syncedAt = new Date().toISOString(), hasOpenPr = false }) {
+export function defaultPortfolioTitle(repo) {
+  return String(repo || '').split('/').pop() || 'Repository';
+}
+
+export function buildPortfolioProjectProperties({ repo, syncedAt = new Date().toISOString() }) {
+  return {
+    Title: {
+      title: [{ text: { content: defaultPortfolioTitle(repo).slice(0, 1900) } }],
+    },
+    'Project Key': {
+      rich_text: [{ text: { content: repo } }],
+    },
+    Status: {
+      select: { name: 'Active' },
+    },
+    'Repository URL': {
+      url: `https://github.com/${repo}`,
+    },
+    'Last Synced At': {
+      date: { start: syncedAt },
+    },
+  };
+}
+
+export function buildTaskProperties({ repo, number, title, url, issueState, labels = [], body = '', prUrl = null, syncedAt = new Date().toISOString(), hasOpenPr = false, projectPageId = null }) {
   const notionStatus = mapNotionStatus({ issueState, labels, hasOpenPr });
   const workType = inferWorkType(labels);
   const priority = inferPriority(labels);
@@ -96,6 +120,12 @@ export function buildTaskProperties({ repo, number, title, url, issueState, labe
     properties['PR URL'] = { url: prUrl };
   }
 
+  if (projectPageId) {
+    properties.Project = {
+      relation: [{ id: projectPageId }],
+    };
+  }
+
   return properties;
 }
 
@@ -131,7 +161,7 @@ export async function findPageByItemKey({ token, dbId, itemKey }) {
     token,
     method: 'POST',
     body: {
-      page_size: 1,
+      page_size: 100,
       filter: {
         property: 'GitHub Item Key',
         rich_text: {
@@ -141,20 +171,77 @@ export async function findPageByItemKey({ token, dbId, itemKey }) {
     },
   });
 
-  return result.results?.[0] || null;
+  return result.results || [];
 }
 
-export async function upsertTaskPage({ token, dbId, properties }) {
-  const key = properties['GitHub Item Key'].rich_text[0].text.content;
-  const existing = await findPageByItemKey({ token, dbId, itemKey: key });
+export async function findPortfolioProjectByKey({ token, dbId, projectKey }) {
+  const result = await notionRequest(`/databases/${dbId}/query`, {
+    token,
+    method: 'POST',
+    body: {
+      page_size: 100,
+      filter: {
+        property: 'Project Key',
+        rich_text: {
+          equals: projectKey,
+        },
+      },
+    },
+  });
 
-  if (existing) {
-    const updated = await notionRequest(`/pages/${existing.id}`, {
+  return result.results || [];
+}
+
+function selectCanonicalAndDuplicates(pages = []) {
+  if (!pages.length) {
+    return { canonical: null, duplicates: [] };
+  }
+
+  const sorted = [...pages].sort((a, b) => {
+    const ta = a.created_time || '';
+    const tb = b.created_time || '';
+    if (ta !== tb) return ta.localeCompare(tb);
+    return (a.id || '').localeCompare(b.id || '');
+  });
+
+  return {
+    canonical: sorted[0],
+    duplicates: sorted.slice(1),
+  };
+}
+
+async function archivePages({ token, pages = [] }) {
+  for (const page of pages) {
+    await notionRequest(`/pages/${page.id}`, {
+      token,
+      method: 'PATCH',
+      body: { archived: true },
+    });
+  }
+}
+
+export async function upsertPortfolioProjectPage({ token, dbId, repo }) {
+  const properties = buildPortfolioProjectProperties({
+    repo,
+    syncedAt: new Date().toISOString(),
+  });
+  const all = await findPortfolioProjectByKey({
+    token,
+    dbId,
+    projectKey: repo,
+  });
+  const { canonical, duplicates } = selectCanonicalAndDuplicates(all);
+
+  if (canonical) {
+    const updated = await notionRequest(`/pages/${canonical.id}`, {
       token,
       method: 'PATCH',
       body: { properties },
     });
-    return { mode: 'updated', id: updated.id };
+    if (duplicates.length) {
+      await archivePages({ token, pages: duplicates });
+    }
+    return { mode: 'updated', id: updated.id, deduped: duplicates.length };
   }
 
   const created = await notionRequest('/pages', {
@@ -166,7 +253,36 @@ export async function upsertTaskPage({ token, dbId, properties }) {
     },
   });
 
-  return { mode: 'created', id: created.id };
+  return { mode: 'created', id: created.id, deduped: 0 };
+}
+
+export async function upsertTaskPage({ token, dbId, properties }) {
+  const key = properties['GitHub Item Key'].rich_text[0].text.content;
+  const all = await findPageByItemKey({ token, dbId, itemKey: key });
+  const { canonical, duplicates } = selectCanonicalAndDuplicates(all);
+
+  if (canonical) {
+    const updated = await notionRequest(`/pages/${canonical.id}`, {
+      token,
+      method: 'PATCH',
+      body: { properties },
+    });
+    if (duplicates.length) {
+      await archivePages({ token, pages: duplicates });
+    }
+    return { mode: 'updated', id: updated.id, deduped: duplicates.length };
+  }
+
+  const created = await notionRequest('/pages', {
+    token,
+    method: 'POST',
+    body: {
+      parent: { database_id: dbId },
+      properties,
+    },
+  });
+
+  return { mode: 'created', id: created.id, deduped: 0 };
 }
 
 export function toTaskPayloadFromIssue({ repo, issue, prUrl = null, hasOpenPr = false }) {

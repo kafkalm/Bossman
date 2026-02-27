@@ -1,5 +1,6 @@
 import {
   buildTaskProperties,
+  upsertPortfolioProjectPage,
   upsertTaskPage,
 } from './notion_sync_core.mjs';
 
@@ -37,10 +38,17 @@ function sinceIso(days) {
 
 async function main() {
   const notionToken = requireEnv('NOTION_TOKEN');
-  const dbId = requireEnv('NOTION_TASK_DB_ID');
+  const taskDbId = requireEnv('NOTION_TASK_DB_ID');
+  const portfolioDbId = requireEnv('NOTION_PORTFOLIO_DB_ID');
   const githubToken = requireEnv('GITHUB_TOKEN');
   const repo = requireEnv('GITHUB_REPOSITORY');
   const days = Number(process.env.RECONCILE_DAYS || '30');
+
+  const portfolioProject = await upsertPortfolioProjectPage({
+    token: notionToken,
+    dbId: portfolioDbId,
+    repo,
+  });
 
   const issues = await githubRequest(
     `/repos/${repo}/issues?state=all&since=${encodeURIComponent(sinceIso(days))}&per_page=100`,
@@ -60,13 +68,18 @@ async function main() {
       prUrl: issue.pull_request ? issue.html_url : null,
       hasOpenPr: Boolean(issue.pull_request && issue.state === 'open'),
       syncedAt: new Date().toISOString(),
+      projectPageId: portfolioProject.id,
     });
 
-    await upsertTaskPage({ token: notionToken, dbId, properties });
+    await upsertTaskPage({ token: notionToken, dbId: taskDbId, properties });
     synced += 1;
   }
 
   console.log(`Reconciled ${synced} items for ${repo}`);
+  console.log(`Portfolio ${portfolioProject.mode}: ${portfolioProject.id}`);
+  if (portfolioProject.deduped) {
+    console.log(`Portfolio deduped: archived ${portfolioProject.deduped} duplicate pages`);
+  }
 }
 
 main().catch((error) => {

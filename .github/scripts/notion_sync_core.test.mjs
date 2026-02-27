@@ -6,6 +6,7 @@ import {
   mapNotionStatus,
   buildTaskProperties,
   buildGithubItemKey,
+  buildPortfolioProjectProperties,
 } from './notion_sync_core.mjs';
 
 test('inferPriority maps labels to priority', () => {
@@ -39,6 +40,7 @@ test('buildTaskProperties creates required Notion fields', () => {
     issueState: 'open',
     labels: [{ name: 'type:feature' }, { name: 'prio:p1' }],
     body: 'Estimate: L',
+    projectPageId: '31424215-b1ed-81d0-8d66-df4193c5838e',
   });
 
   assert.equal(props['GitHub Issue ID'].number, 77);
@@ -47,4 +49,18 @@ test('buildTaskProperties creates required Notion fields', () => {
   assert.equal(props.Estimate.select.name, 'L');
   assert.equal(props['Work Type'].select.name, 'feature');
   assert.equal(props['GitHub Item Key'].rich_text[0].text.content, 'kafkalm/Bossman#77');
+  assert.deepEqual(props.Project.relation, [{ id: '31424215-b1ed-81d0-8d66-df4193c5838e' }]);
+});
+
+test('buildPortfolioProjectProperties creates stable project row properties', () => {
+  const props = buildPortfolioProjectProperties({
+    repo: 'kafkalm/rougeflipper',
+    syncedAt: '2026-02-27T12:00:00.000Z',
+  });
+
+  assert.equal(props.Title.title[0].text.content, 'rougeflipper');
+  assert.equal(props['Project Key'].rich_text[0].text.content, 'kafkalm/rougeflipper');
+  assert.equal(props.Status.select.name, 'Active');
+  assert.equal(props['Repository URL'].url, 'https://github.com/kafkalm/rougeflipper');
+  assert.equal(props['Last Synced At'].date.start, '2026-02-27T12:00:00.000Z');
 });

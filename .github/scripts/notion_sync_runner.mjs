@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import {
   buildTaskProperties,
   toTaskPayloadFromIssue,
+  upsertPortfolioProjectPage,
   upsertTaskPage,
 } from './notion_sync_core.mjs';
 
@@ -45,7 +46,8 @@ function toSyncInput({ payload, repo }) {
 
 async function main() {
   const notionToken = requireEnv('NOTION_TOKEN');
-  const dbId = requireEnv('NOTION_TASK_DB_ID');
+  const taskDbId = requireEnv('NOTION_TASK_DB_ID');
+  const portfolioDbId = requireEnv('NOTION_PORTFOLIO_DB_ID');
   const repo = requireEnv('GITHUB_REPOSITORY');
 
   const payload = loadEventPayload();
@@ -56,11 +58,26 @@ async function main() {
     return;
   }
 
-  const properties = buildTaskProperties(syncInput);
-  const result = await upsertTaskPage({ token: notionToken, dbId, properties });
+  const portfolioProject = await upsertPortfolioProjectPage({
+    token: notionToken,
+    dbId: portfolioDbId,
+    repo,
+  });
+  const properties = buildTaskProperties({
+    ...syncInput,
+    projectPageId: portfolioProject.id,
+  });
+  const result = await upsertTaskPage({ token: notionToken, dbId: taskDbId, properties });
 
   console.log(`Notion ${result.mode}: ${result.id}`);
   console.log(`Synced ${repo}#${syncInput.number}`);
+  console.log(`Portfolio ${portfolioProject.mode}: ${portfolioProject.id}`);
+  if (result.deduped) {
+    console.log(`Task deduped: archived ${result.deduped} duplicate pages`);
+  }
+  if (portfolioProject.deduped) {
+    console.log(`Portfolio deduped: archived ${portfolioProject.deduped} duplicate pages`);
+  }
 }
 
 main().catch((error) => {
