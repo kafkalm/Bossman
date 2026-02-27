@@ -100,9 +100,6 @@ export function buildTaskProperties({
     || ((notionStatus === 'Doing' || notionStatus === 'Reviewing' || notionStatus === 'Blocked' || notionStatus === 'Done')
       ? createdDate
       : null);
-  const leadHours = hoursBetween(doneDate, createdDate);
-  const cycleHours = hoursBetween(doneDate, startedDate);
-  const doneInLast7d = isDoneInLast7d(doneDate, syncedAt) ? 1 : 0;
 
   const properties = {
     Title: {
@@ -141,15 +138,6 @@ export function buildTaskProperties({
     'Done At': {
       date: doneDate ? { start: doneDate } : null,
     },
-    'Cycle Hours': {
-      number: cycleHours,
-    },
-    'Lead Hours': {
-      number: leadHours,
-    },
-    'Done In Last 7d': {
-      number: doneInLast7d,
-    },
     'Last Synced At': {
       date: { start: syncedAt },
     },
@@ -176,25 +164,6 @@ function normalizeIso(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   return date.toISOString();
-}
-
-function hoursBetween(laterIso, earlierIso) {
-  if (!laterIso || !earlierIso) return null;
-  const later = new Date(laterIso).getTime();
-  const earlier = new Date(earlierIso).getTime();
-  if (Number.isNaN(later) || Number.isNaN(earlier)) return null;
-  const hours = (later - earlier) / (1000 * 60 * 60);
-  if (hours < 0) return 0;
-  return Math.round(hours * 10) / 10;
-}
-
-function isDoneInLast7d(doneIso, referenceIso) {
-  if (!doneIso) return false;
-  const done = new Date(doneIso).getTime();
-  const reference = new Date(referenceIso).getTime();
-  if (Number.isNaN(done) || Number.isNaN(reference)) return false;
-  if (done > reference) return false;
-  return reference - done <= 7 * 24 * 60 * 60 * 1000;
 }
 
 export function notionHeaders(token) {

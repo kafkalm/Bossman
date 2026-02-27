@@ -55,9 +55,9 @@ test('buildTaskProperties creates required Notion fields', () => {
   assert.equal(props['Created At'].date.start, '2026-02-20T00:00:00.000Z');
   assert.equal(props['Started At'].date.start, '2026-02-20T00:00:00.000Z');
   assert.equal(props['Done At'].date.start, '2026-02-22T12:00:00.000Z');
-  assert.equal(props['Cycle Hours'].number, 60);
-  assert.equal(props['Lead Hours'].number, 60);
-  assert.equal(props['Done In Last 7d'].number, 1);
+  assert.equal(props['Cycle Hours'], undefined);
+  assert.equal(props['Lead Hours'], undefined);
+  assert.equal(props['Done In Last 7d'], undefined);
   assert.deepEqual(props.Project.relation, [{ id: '31424215-b1ed-81d0-8d66-df4193c5838e' }]);
 });
 
@@ -91,7 +91,7 @@ test('buildTaskProperties keeps timeline fields empty for planned open issue', (
   assert.equal(props['Created At'].date.start, '2026-02-20T00:00:00.000Z');
   assert.equal(props['Started At'].date, null);
   assert.equal(props['Done At'].date, null);
-  assert.equal(props['Cycle Hours'].number, null);
-  assert.equal(props['Lead Hours'].number, null);
-  assert.equal(props['Done In Last 7d'].number, 0);
+  assert.equal(props['Cycle Hours'], undefined);
+  assert.equal(props['Lead Hours'], undefined);
+  assert.equal(props['Done In Last 7d'], undefined);
 });
