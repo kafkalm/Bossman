@@ -27,6 +27,8 @@
 
 # all dot-prefixed directories (local/tooling, never commit)
 .*/
+!/.github/
+!/.github/**
 
 # debug
 npm-debug.log*
