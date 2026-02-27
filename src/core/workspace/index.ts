@@ -4,5 +4,4 @@ export {
   writeWorkspaceFile,
   readWorkspaceFile,
   listWorkspaceFiles,
-  hydrateProjectFilesContent,
 } from "./workspace";

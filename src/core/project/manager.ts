@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import type { CreateProjectInput } from "./types";
 
@@ -14,7 +15,7 @@ export class ProjectManager {
         companyId: input.companyId,
         name: input.name,
         description: input.description,
-        status: "planning",
+        status: "active",
       },
     });
   }
@@ -39,7 +40,7 @@ export class ProjectManager {
     });
     if (!project) return null;
 
-    const [tasks, messages, files] = await Promise.all([
+    const [tasks, messages] = await Promise.all([
       prisma.task
         .findMany({
           where: { projectId: id, parentId: null },
@@ -89,30 +90,13 @@ export class ProjectManager {
           console.warn("[ProjectManager.getProject] messages query failed, fallback to empty list:", error);
           return [];
         }),
-      prisma.projectFile
-        .findMany({
-          where: { projectId: id },
-          orderBy: { createdAt: "asc" },
-          include: {
-            employee: {
-              include: {
-                role: { select: { id: true, name: true, title: true } },
-              },
-            },
-            task: { select: { id: true, title: true } },
-          },
-        })
-        .catch((error) => {
-          console.warn("[ProjectManager.getProject] files query failed, fallback to empty list:", error);
-          return [];
-        }),
     ]);
 
     return {
       ...project,
       tasks,
       messages,
-      files,
+      files: [],
     };
   }
 
@@ -142,8 +126,8 @@ export class ProjectManager {
 
   /**
    * Create a task for a project.
-   * When creating and immediately assigning (e.g. CEO assign_task), pass status: "assigned"
-   * so the task never appears as "pending".
+   * When creating and immediately assigning (e.g. CEO assign_task), pass status: "in_progress"
+   * so the task never appears as "todo".
    */
   async createTask(options: {
     projectId: string;
@@ -160,7 +144,7 @@ export class ProjectManager {
         description: options.description,
         parentId: options.parentId,
         priority: options.priority ?? 0,
-        status: options.status ?? "pending",
+        status: options.status ?? "todo",
       },
     });
   }
@@ -172,7 +156,7 @@ export class ProjectManager {
     // Update task status
     await prisma.task.update({
       where: { id: taskId },
-      data: { status: "assigned" },
+      data: { status: "in_progress" },
     });
 
     // Create assignment
@@ -227,8 +211,58 @@ export class ProjectManager {
    * Delete a project.
    */
   async deleteProject(id: string) {
-    return prisma.project.delete({ where: { id } });
+    const result = await prisma.$transaction(async (tx) => {
+      const exists = await tx.project.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+      if (!exists) {
+        return { deleted: false };
+      }
+
+      // Use raw SQL cleanup to tolerate schema drift between runtime DB and generated Prisma delegates.
+      await safeProjectDelete(tx, `DELETE FROM "EmployeeInbox" WHERE "projectId" = ?`, id);
+      await safeProjectDelete(tx, `DELETE FROM "ConversationMessage" WHERE "projectId" = ?`, id);
+      await safeProjectDelete(tx, `DELETE FROM "ConversationThread" WHERE "projectId" = ?`, id);
+      await safeProjectDelete(tx, `DELETE FROM "EngineTimelineEvent" WHERE "projectId" = ?`, id);
+      await safeProjectDelete(tx, `DELETE FROM "TaskTransition" WHERE "projectId" = ?`, id);
+      await safeProjectDelete(tx, `DELETE FROM "ProjectTransition" WHERE "projectId" = ?`, id);
+      await safeProjectDelete(tx, `DELETE FROM "ProjectFile" WHERE "projectId" = ?`, id);
+      await safeProjectDelete(tx, `DELETE FROM "Message" WHERE "projectId" = ?`, id);
+      await safeProjectDelete(tx, `DELETE FROM "TokenUsage" WHERE "projectId" = ?`, id);
+      await safeProjectDelete(
+        tx,
+        `DELETE FROM "TaskAssignment" WHERE "taskId" IN (SELECT "id" FROM "Task" WHERE "projectId" = ?)`,
+        id
+      );
+      await safeProjectDelete(tx, `DELETE FROM "Task" WHERE "projectId" = ? AND "parentId" IS NOT NULL`, id);
+      await safeProjectDelete(tx, `DELETE FROM "Task" WHERE "projectId" = ?`, id);
+      await safeProjectDelete(tx, `DELETE FROM "Project" WHERE "id" = ?`, id);
+
+      return { deleted: true };
+    });
+
+    if (!result.deleted) {
+      throw new Error("Project not found");
+    }
+    return result;
   }
 }
 
 export const projectManager = new ProjectManager();
+
+async function safeProjectDelete(
+  tx: Prisma.TransactionClient,
+  sql: string,
+  projectId: string
+) {
+  try {
+    await tx.$executeRawUnsafe(sql, projectId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.toLowerCase().includes("no such table")) {
+      return;
+    }
+    throw error;
+  }
+}

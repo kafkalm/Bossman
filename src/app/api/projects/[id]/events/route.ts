@@ -1,3 +1,5 @@
+import { getGoEngineURL } from "@/lib/go-engine";
+
 // This route is superseded by the next.config.ts rewrite that proxies SSE
 // directly to the Go engine at http://localhost:8080/engine/projects/:id/events.
 // This file is kept as a fallback reference only and should not be reached
@@ -9,10 +11,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const goEngineURL = process.env.GO_ENGINE_URL ?? "http://localhost:8080";
 
   // Fallback: manually stream from Go engine
-  const upstream = await fetch(`${goEngineURL}/engine/projects/${id}/events`, {
+  const upstream = await fetch(`${getGoEngineURL()}/engine/projects/${id}/events`, {
     headers: { Accept: "text/event-stream" },
   });
 

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-
-const GO_ENGINE_URL = process.env.GO_ENGINE_URL ?? "http://localhost:8080";
+import { getGoEngineURL } from "@/lib/go-engine";
 
 export async function POST(
   _request: Request,
@@ -8,7 +7,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const res = await fetch(`${GO_ENGINE_URL}/engine/projects/${id}/start`, {
+    const res = await fetch(`${getGoEngineURL()}/engine/projects/${id}/start`, {
       method: "POST",
     });
     if (!res.ok) {

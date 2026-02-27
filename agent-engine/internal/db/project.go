@@ -8,7 +8,7 @@ import (
 	"github.com/kafkalm/bossman/agent-engine/internal/cuid"
 )
 
-// GetProject retrieves a project by ID
+// GetProject retrieves a project by ID.
 func (d *DB) GetProject(ctx context.Context, id string) (*Project, error) {
 	var p Project
 	err := d.GetContext(ctx, &p, `SELECT * FROM Project WHERE id = ?`, id)
@@ -18,7 +18,7 @@ func (d *DB) GetProject(ctx context.Context, id string) (*Project, error) {
 	return &p, nil
 }
 
-// UpdateProjectStatus updates a project's status
+// UpdateProjectStatus updates a project's status.
 func (d *DB) UpdateProjectStatus(ctx context.Context, id, status string) error {
 	_, err := d.ExecContext(ctx,
 		`UPDATE Project SET status = ?, updatedAt = ? WHERE id = ?`,
@@ -79,13 +79,13 @@ func (d *DB) GetTasksForProject(ctx context.Context, projectID string) ([]TaskWi
 	return tasks, nil
 }
 
-// CreateTask creates a new task and returns it
+// CreateTask creates a new task and returns it.
 func (d *DB) CreateTask(ctx context.Context, projectID, title, description string, priority int) (*Task, error) {
 	now := time.Now()
 	id := cuid.Generate()
 	_, err := d.ExecContext(ctx,
 		`INSERT INTO Task (id, projectId, title, description, status, priority, createdAt, updatedAt)
-		 VALUES (?, ?, ?, ?, 'assigned', ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, 'todo', ?, ?, ?)`,
 		id, projectID, title, description, priority, now, now,
 	)
 	if err != nil {
@@ -96,7 +96,7 @@ func (d *DB) CreateTask(ctx context.Context, projectID, title, description strin
 		ProjectID:   projectID,
 		Title:       title,
 		Description: description,
-		Status:      "assigned",
+		Status:      "todo",
 		Priority:    priority,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -113,6 +113,31 @@ func (d *DB) AssignTask(ctx context.Context, taskID, employeeID string) error {
 		id, taskID, employeeID, now,
 	)
 	return err
+}
+
+// ReassignTask replaces all existing assignees for a task with the new employee.
+func (d *DB) ReassignTask(ctx context.Context, taskID, employeeID string) error {
+	tx, err := d.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("ReassignTask begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM TaskAssignment WHERE taskId = ?`, taskID); err != nil {
+		return fmt.Errorf("ReassignTask clear: %w", err)
+	}
+	id := cuid.Generate()
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO TaskAssignment (id, taskId, employeeId, assignedAt) VALUES (?, ?, ?, ?)`,
+		id, taskID, employeeID, now,
+	); err != nil {
+		return fmt.Errorf("ReassignTask insert: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("ReassignTask commit: %w", err)
+	}
+	return nil
 }
 
 // UpdateTaskStatus updates a task's status
@@ -133,10 +158,28 @@ func (d *DB) UpdateTaskOutput(ctx context.Context, taskID, status, output string
 	return err
 }
 
-// ClearTaskOutput clears task output and resets status (for revision)
+// SetTaskOutput updates only task output content.
+func (d *DB) SetTaskOutput(ctx context.Context, taskID, output string) error {
+	_, err := d.ExecContext(ctx,
+		`UPDATE Task SET output = ?, updatedAt = ? WHERE id = ?`,
+		output, time.Now(), taskID,
+	)
+	return err
+}
+
+// UpdateTaskDetails updates task title/description/priority.
+func (d *DB) UpdateTaskDetails(ctx context.Context, taskID, title, description string, priority int) error {
+	_, err := d.ExecContext(ctx,
+		`UPDATE Task SET title = ?, description = ?, priority = ?, updatedAt = ? WHERE id = ?`,
+		title, description, priority, time.Now(), taskID,
+	)
+	return err
+}
+
+// ClearTaskOutput clears task output (status transition is handled separately).
 func (d *DB) ClearTaskOutput(ctx context.Context, taskID string) error {
 	_, err := d.ExecContext(ctx,
-		`UPDATE Task SET status = 'in_progress', output = NULL, updatedAt = ? WHERE id = ?`,
+		`UPDATE Task SET output = NULL, updatedAt = ? WHERE id = ?`,
 		time.Now(), taskID,
 	)
 	return err
@@ -165,34 +208,36 @@ func (d *DB) GetTask(ctx context.Context, taskID string) (*TaskWithAssignment, e
 	return &task, nil
 }
 
-// GetInProgressProjectIDs returns IDs of all projects with status 'in_progress'
+// GetInProgressProjectIDs returns IDs of all active projects.
 func (d *DB) GetInProgressProjectIDs(ctx context.Context) ([]string, error) {
 	var ids []string
-	if err := d.SelectContext(ctx, &ids, `SELECT id FROM Project WHERE status = 'in_progress'`); err != nil {
+	if err := d.SelectContext(ctx, &ids, `SELECT id FROM Project WHERE status = 'active'`); err != nil {
 		return nil, fmt.Errorf("GetInProgressProjectIDs: %w", err)
 	}
 	return ids, nil
 }
 
-// GetInProgressProjectIDsByCompany returns in-progress project IDs for a company
+// GetInProgressProjectIDsByCompany returns active project IDs for a company.
 func (d *DB) GetInProgressProjectIDsByCompany(ctx context.Context, companyID string) ([]string, error) {
 	var ids []string
 	if err := d.SelectContext(ctx, &ids,
-		`SELECT id FROM Project WHERE companyId = ? AND status = 'in_progress' ORDER BY updatedAt ASC`,
+		`SELECT id FROM Project WHERE companyId = ? AND status = 'active' ORDER BY updatedAt ASC`,
 		companyID); err != nil {
 		return nil, fmt.Errorf("GetInProgressProjectIDsByCompany: %w", err)
 	}
 	return ids, nil
 }
 
-// GetTodoQueue returns tasks assigned to an employee that are not yet complete (assigned or in_progress)
+// GetTodoQueue returns queued tasks for an employee.
 func (d *DB) GetTodoQueue(ctx context.Context, employeeID, projectID string) ([]Task, error) {
 	const q = `
 	SELECT t.*
 	FROM Task t
 	JOIN TaskAssignment ta ON ta.taskId = t.id
+	JOIN Project p ON p.id = t.projectId
 	WHERE ta.employeeId = ? AND t.projectId = ?
-	  AND t.status IN ('assigned', 'in_progress')
+	  AND p.status = 'active'
+	  AND t.status IN ('todo', 'in_progress')
 	ORDER BY t.priority DESC, t.createdAt ASC
 	LIMIT 1
 	`
@@ -203,14 +248,15 @@ func (d *DB) GetTodoQueue(ctx context.Context, employeeID, projectID string) ([]
 	return tasks, nil
 }
 
-// GetNextTodoTask returns one task (any project) assigned to the employee that is not yet complete.
-// Returns (nil, "", sql.ErrNoRows) when the employee has no pending tasks.
+// GetNextTodoTask returns one runnable task for the employee.
+// Returns (nil, "", sql.ErrNoRows) when the employee has no queued tasks.
 func (d *DB) GetNextTodoTask(ctx context.Context, employeeID string) (*Task, string, error) {
 	const q = `
 	SELECT t.id, t.projectId, t.parentId, t.title, t.description, t.status, t.priority, t.output, t.createdAt, t.updatedAt
 	FROM Task t
 	JOIN TaskAssignment ta ON ta.taskId = t.id
-	WHERE ta.employeeId = ? AND t.status IN ('assigned', 'in_progress')
+	JOIN Project p ON p.id = t.projectId
+	WHERE ta.employeeId = ? AND t.status IN ('todo', 'in_progress') AND p.status = 'active'
 	ORDER BY t.priority DESC, t.createdAt ASC
 	LIMIT 1
 	`

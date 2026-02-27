@@ -14,13 +14,28 @@ import (
 )
 
 type fakeLLM struct {
-	resp *llm.LLMResponse
-	err  error
+	resp           *llm.LLMResponse
+	responses      []*llm.LLMResponse
+	err            error
+	lastMessages   []llm.ChatMessage
+	messagesByCall [][]llm.ChatMessage
+	callCount      int
 }
 
 func (f *fakeLLM) Call(cfg llm.ModelConfig, messages []llm.ChatMessage, system string, tools []llm.ToolDefinition, opts llm.CallOptions) (*llm.LLMResponse, error) {
+	snapshot := append([]llm.ChatMessage(nil), messages...)
+	f.lastMessages = snapshot
+	f.messagesByCall = append(f.messagesByCall, snapshot)
+	f.callCount++
 	if f.err != nil {
 		return nil, f.err
+	}
+	if len(f.responses) > 0 {
+		idx := f.callCount - 1
+		if idx < len(f.responses) {
+			return f.responses[idx], nil
+		}
+		return f.responses[len(f.responses)-1], nil
 	}
 	if f.resp == nil {
 		return &llm.LLMResponse{}, nil
@@ -52,6 +67,12 @@ func newTestDB(t *testing.T) *db.DB {
 		`CREATE TABLE Message (id TEXT PRIMARY KEY, projectId TEXT, taskId TEXT, senderId TEXT, senderType TEXT, content TEXT, metadata TEXT, createdAt DATETIME);`,
 		`CREATE TABLE ProjectFile (id TEXT PRIMARY KEY, projectId TEXT, employeeId TEXT, taskId TEXT, title TEXT, path TEXT, content TEXT, brief TEXT, fileType TEXT, createdAt DATETIME);`,
 		`CREATE TABLE TokenUsage (id TEXT PRIMARY KEY, employeeId TEXT, projectId TEXT, model TEXT, provider TEXT, inputTokens INTEGER, outputTokens INTEGER, cost REAL, createdAt DATETIME);`,
+		`CREATE TABLE project_transitions (id TEXT PRIMARY KEY, projectId TEXT, fromStatus TEXT, toStatus TEXT, reason TEXT, actor TEXT, createdAt DATETIME);`,
+		`CREATE TABLE task_transitions (id TEXT PRIMARY KEY, taskId TEXT, projectId TEXT, fromStatus TEXT, toStatus TEXT, reason TEXT, actor TEXT, createdAt DATETIME);`,
+		`CREATE TABLE conversation_threads (id TEXT PRIMARY KEY, projectId TEXT, taskId TEXT, subject TEXT, createdBy TEXT, status TEXT, createdAt DATETIME, updatedAt DATETIME);`,
+		`CREATE TABLE conversation_messages (id TEXT PRIMARY KEY, threadId TEXT, projectId TEXT, taskId TEXT, fromEmployeeId TEXT, toEmployeeId TEXT, messageType TEXT, content TEXT, payload TEXT, createdAt DATETIME);`,
+		`CREATE TABLE employee_inbox (id TEXT PRIMARY KEY, employeeId TEXT, projectId TEXT, taskId TEXT, threadId TEXT, messageId TEXT, status TEXT, expiresAt DATETIME, createdAt DATETIME, updatedAt DATETIME);`,
+		`CREATE TABLE engine_timeline_events (id TEXT PRIMARY KEY, projectId TEXT, taskId TEXT, eventType TEXT, actor TEXT, summary TEXT, payload TEXT, createdAt DATETIME);`,
 	}
 	for _, s := range schema {
 		if _, err := database.Exec(s); err != nil {
@@ -65,7 +86,7 @@ func seedBasicProjectData(t *testing.T, database *db.DB) {
 	t.Helper()
 	now := time.Now()
 	_, err := database.Exec(`INSERT INTO Project (id, companyId, name, description, status, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"proj-1", "comp-1", "Project", "Desc", ProjectStatusInProgress, now, now)
+		"proj-1", "comp-1", "Project", "Desc", ProjectStatusActive, now, now)
 	if err != nil {
 		t.Fatalf("insert project: %v", err)
 	}

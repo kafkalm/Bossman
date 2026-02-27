@@ -11,13 +11,25 @@ type Company struct {
 	UpdatedAt   time.Time `db:"updatedAt"`
 }
 
+// Skill mirrors the Prisma Skill model.
+type Skill struct {
+	ID          string    `db:"id"`
+	Name        string    `db:"name"`
+	Description *string   `db:"description"`
+	Content     string    `db:"content"`
+	Source      string    `db:"source"`
+	CompanyID   *string   `db:"companyId"`
+	CreatedAt   time.Time `db:"createdAt"`
+	UpdatedAt   time.Time `db:"updatedAt"`
+}
+
 // AgentRole mirrors the Prisma AgentRole model
 type AgentRole struct {
 	ID           string    `db:"id"`
 	Name         string    `db:"name"`
 	Title        string    `db:"title"`
 	SystemPrompt string    `db:"systemPrompt"`
-	ModelConfig  string    `db:"modelConfig"` // JSON string
+	ModelConfig  string    `db:"modelConfig"`  // JSON string
 	Capabilities *string   `db:"capabilities"` // JSON string, nullable
 	IsBuiltin    bool      `db:"isBuiltin"`
 	CreatedAt    time.Time `db:"createdAt"`
@@ -38,10 +50,10 @@ type Employee struct {
 // EmployeeWithRole is Employee joined with AgentRole
 type EmployeeWithRole struct {
 	Employee
-	RoleName         string  `db:"role_name"`
-	RoleTitle        string  `db:"role_title"`
-	RoleSystemPrompt string  `db:"role_systemPrompt"`
-	RoleModelConfig  string  `db:"role_modelConfig"`
+	RoleName         string `db:"role_name"`
+	RoleTitle        string `db:"role_title"`
+	RoleSystemPrompt string `db:"role_systemPrompt"`
+	RoleModelConfig  string `db:"role_modelConfig"`
 }
 
 // Project mirrors the Prisma Project model
@@ -51,7 +63,7 @@ type Project struct {
 	Name        string    `db:"name"`
 	Description string    `db:"description"`
 	Document    *string   `db:"document"`
-	Status      string    `db:"status"` // planning, in_progress, review, completed, failed
+	Status      string    `db:"status"` // active, review, paused, done, blocked, canceled
 	CreatedAt   time.Time `db:"createdAt"`
 	UpdatedAt   time.Time `db:"updatedAt"`
 }
@@ -63,7 +75,7 @@ type Task struct {
 	ParentID    *string   `db:"parentId"`
 	Title       string    `db:"title"`
 	Description string    `db:"description"`
-	Status      string    `db:"status"` // pending, assigned, in_progress, review, completed, blocked
+	Status      string    `db:"status"` // todo, in_progress, review, done, blocked, canceled
 	Priority    int       `db:"priority"`
 	Output      *string   `db:"output"`
 	CreatedAt   time.Time `db:"createdAt"`
@@ -124,4 +136,83 @@ type TokenUsage struct {
 	OutputTokens int       `db:"outputTokens"`
 	Cost         *float64  `db:"cost"`
 	CreatedAt    time.Time `db:"createdAt"`
+}
+
+type ProjectTransition struct {
+	ID         string    `db:"id"`
+	ProjectID  string    `db:"projectId"`
+	FromStatus string    `db:"fromStatus"`
+	ToStatus   string    `db:"toStatus"`
+	Reason     string    `db:"reason"`
+	Actor      string    `db:"actor"`
+	CreatedAt  time.Time `db:"createdAt"`
+}
+
+type TaskTransition struct {
+	ID         string    `db:"id"`
+	TaskID     string    `db:"taskId"`
+	ProjectID  string    `db:"projectId"`
+	FromStatus string    `db:"fromStatus"`
+	ToStatus   string    `db:"toStatus"`
+	Reason     string    `db:"reason"`
+	Actor      string    `db:"actor"`
+	CreatedAt  time.Time `db:"createdAt"`
+}
+
+type ConversationThread struct {
+	ID        string    `db:"id"`
+	ProjectID string    `db:"projectId"`
+	TaskID    *string   `db:"taskId"`
+	Subject   string    `db:"subject"`
+	CreatedBy string    `db:"createdBy"`
+	Status    string    `db:"status"`
+	CreatedAt time.Time `db:"createdAt"`
+	UpdatedAt time.Time `db:"updatedAt"`
+}
+
+type ConversationMessage struct {
+	ID             string    `db:"id"`
+	ThreadID       string    `db:"threadId"`
+	ProjectID      string    `db:"projectId"`
+	TaskID         *string   `db:"taskId"`
+	FromEmployeeID *string   `db:"fromEmployeeId"`
+	ToEmployeeID   *string   `db:"toEmployeeId"`
+	MessageType    string    `db:"messageType"`
+	Content        string    `db:"content"`
+	Payload        *string   `db:"payload"`
+	CreatedAt      time.Time `db:"createdAt"`
+}
+
+type EmployeeInbox struct {
+	ID         string     `db:"id"`
+	EmployeeID string     `db:"employeeId"`
+	ProjectID  string     `db:"projectId"`
+	TaskID     *string    `db:"taskId"`
+	ThreadID   *string    `db:"threadId"`
+	MessageID  *string    `db:"messageId"`
+	Status     string     `db:"status"`
+	ExpiresAt  *time.Time `db:"expiresAt"`
+	CreatedAt  time.Time  `db:"createdAt"`
+	UpdatedAt  time.Time  `db:"updatedAt"`
+}
+
+type InboxItem struct {
+	EmployeeInbox
+	Subject       *string `db:"subject"`
+	Content       *string `db:"content"`
+	MessageType   *string `db:"messageType"`
+	FromEmployee  *string `db:"fromEmployeeId"`
+	ToEmployee    *string `db:"toEmployeeId"`
+	ThreadSubject *string `db:"thread_subject"`
+}
+
+type TimelineEvent struct {
+	ID        string    `db:"id"`
+	ProjectID string    `db:"projectId"`
+	TaskID    *string   `db:"taskId"`
+	EventType string    `db:"eventType"`
+	Actor     string    `db:"actor"`
+	Summary   string    `db:"summary"`
+	Payload   *string   `db:"payload"`
+	CreatedAt time.Time `db:"createdAt"`
 }

@@ -106,9 +106,14 @@ export default function ProjectListPage() {
   };
 
   const statusLabelKeys: Record<string, string> = {
+    active: "taskStatus.active",
     planning: "taskStatus.planning",
     in_progress: "taskStatus.in_progress",
+    paused: "taskStatus.paused",
     review: "taskStatus.review",
+    done: "taskStatus.done",
+    blocked: "taskStatus.blocked",
+    canceled: "taskStatus.canceled",
     completed: "taskStatus.completed",
     failed: "taskStatus.failed",
   };

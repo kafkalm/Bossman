@@ -8,15 +8,20 @@ export const CreateProjectSchema = z.object({
 
 export type CreateProjectInput = z.infer<typeof CreateProjectSchema>;
 
-export type ProjectStatus = "planning" | "in_progress" | "review" | "completed" | "failed";
+export type ProjectStatus =
+  | "active"
+  | "review"
+  | "done"
+  | "blocked"
+  | "canceled";
 
 export type TaskStatus =
-  | "pending"
-  | "assigned"
+  | "todo"
   | "in_progress"
   | "review"
-  | "completed"
-  | "blocked";
+  | "done"
+  | "blocked"
+  | "canceled";
 
 export interface ProjectWithDetails {
   id: string;

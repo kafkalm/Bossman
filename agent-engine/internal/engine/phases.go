@@ -30,13 +30,13 @@ func GetCeoPhase(project *db.Project, tasks []db.TaskWithAssignment) CeoPhase {
 	allCompleted := true
 
 	for _, t := range tasks {
-		if t.Status == "review" {
+		if normalizeTaskStatus(t.Status) == TaskStatusReview {
 			hasReview = true
 		}
-		if t.Status == "blocked" {
+		if normalizeTaskStatus(t.Status) == TaskStatusBlocked {
 			hasBlocked = true
 		}
-		if t.Status != "completed" {
+		if normalizeTaskStatus(t.Status) != TaskStatusDone {
 			allCompleted = false
 		}
 	}
@@ -57,20 +57,31 @@ func GetCeoPhase(project *db.Project, tasks []db.TaskWithAssignment) CeoPhase {
 	return PhaseHasActiveWork
 }
 
-// AllTasksActiveOrInProgress returns true when all tasks are assigned or in_progress (pure waiting)
+// AllTasksActiveOrInProgress returns true only when every task is runnable/waiting:
+// status is todo/in_progress AND each task already has an assignee.
 func AllTasksActiveOrInProgress(tasks []db.TaskWithAssignment) bool {
 	if len(tasks) == 0 {
 		return false
 	}
 	for _, t := range tasks {
-		if t.Status != "assigned" && t.Status != "in_progress" {
+		status := normalizeTaskStatus(t.Status)
+		if status != TaskStatusTodo && status != TaskStatusInProgress {
+			return false
+		}
+		if t.AssigneeID == nil {
 			return false
 		}
 	}
 	return true
 }
 
-const ceoRules = `You MUST use tools to take action. Do not just describe — actually do it. Before assigning tasks, decide which roles are actually needed for this project and involve as few employees as necessary — do not assign to every role by default; prefer consolidating work onto fewer people when one role can cover it. In one response you can and should call assign_task multiple times to assign multiple subtasks to the minimal set of involved employees for parallel execution. Assign tasks using roleName (the role: in the team list). Only you decide when a task is done: use approve_task when satisfied, request_revision when not. When the project is ready for handover, set status to "review" (wait for Founder). Only the Founder can set the project to "completed" after acceptance.`
+const ceoRules = `System Core Constraints:
+- You MUST use tools to take action. Do not end a cycle with plain analysis only.
+- State machine is strict. Do not attempt illegal transitions.
+- In review phase, each review task must receive exactly one decision: approve_task, request_revision, or block_task.
+- Team collaboration must happen via task changes only (task updates, reassignments, status changes).
+- If no tool seems applicable, execute a fallback task action: update_task, request_revision, or unblock_task with explicit next step.
+`
 
 func buildPreamble(project *db.Project, snapshot string, iteration, maxIterations int) string {
 	desc := ""
@@ -103,11 +114,11 @@ First decide which roles are actually needed for this project (involve as few em
 	case PhaseTasksInReview:
 		return preamble + `**Current phase: Tasks in review or team has questions.**
 
-Check Recent Messages first. If anyone asked for clarification, answer via ` + "`send_message`" + ` or get an answer via ` + "`request_info`" + ` and then send a summary. Do not ` + "`approve_task`" + ` until clarifications are addressed.
+Check task outputs and workspace files first. Do not use message passing for coordination.
 
-For each task in review: if the deliverable is good, use ` + "`approve_task`" + `; if not, use ` + "`request_revision`" + ` with concrete feedback.
+For each task in review: choose exactly one action: ` + "`approve_task`" + ` / ` + "`request_revision`" + ` / ` + "`block_task`" + `.
 
-Hard requirement for this cycle: you MUST call at least one review action tool (` + "`approve_task`" + ` or ` + "`request_revision`" + `) when there are tasks in review. Do NOT return only analysis text.
+Hard requirement for this cycle: you MUST produce decision tools for all review tasks. Do NOT return only analysis text.
 
 When all relevant deliverables are approved and questions answered, use ` + "`save_project_document`" + ` (doc phase) or move on.
 
@@ -127,21 +138,22 @@ Take action now.`
 		}
 		return preamble + fmt.Sprintf(`**Current phase: All tasks are completed.**
 
-Analyze the Project Document and deliverables. If the project is not complete enough (missing scope, weak quality, or needs another iteration), decide the minimal set of roles needed for the next iteration, then call `+"`assign_task`"+` only for those roles so the team can work in parallel (involve as few employees as necessary). If the project is complete and ready for Founder acceptance, use `+"`update_project_status`"+` to set the project to "review" with a summary. Do NOT set status to "completed" — only the Founder can mark the project completed after acceptance.%s
+Analyze the Project Document and deliverables. If the project is not complete enough (missing scope, weak quality, or needs another iteration), decide the minimal set of roles needed for the next iteration, then call `+"`assign_task`"+` only for those roles so the team can work in parallel (involve as few employees as necessary). If the project is complete and ready for Founder acceptance, use `+"`update_project_status`"+` to set status to "review" with a summary.%s
 
 Take action now.`, lastCycle)
 
 	case PhaseSomeBlocked:
 		return preamble + `**Current phase: Some tasks are blocked or failed.**
 
-Decide how to recover: reassign the work, adjust the plan, or ask a team member for clarification. Use ` + "`send_message`" + `, ` + "`request_info`" + `, or ` + "`assign_task`" + ` / ` + "`request_revision`" + ` as needed.
+Decide how to recover by task actions only: use ` + "`unblock_task`" + `, ` + "`reassign_task`" + `, ` + "`update_task`" + `, or ` + "`request_revision`" + `.
+If rescheduling an existing blocked task, call ` + "`reassign_task`" + ` or ` + "`unblock_task`" + ` so the same task returns to todo and becomes executable.
 
 Take action now.`
 
 	default: // PhaseHasActiveWork
-		return preamble + `**Current phase: Some tasks are in progress, assigned, or pending.**
+		return preamble + `**Current phase: Some tasks are in progress or todo.**
 
-Review the state. If any tasks are in review, handle them (approve_task or request_revision). If you need to assign more work or unblock progress, involve only the minimal set of roles needed, then use the appropriate tools. Prefer calling ` + "`assign_task`" + ` multiple times in one response when adding several tasks.
+Review the state. If any tasks are in review, handle them with explicit decisions. If you need to assign more work or unblock progress, involve only the minimal set of roles needed, then use the appropriate tools. Prefer calling ` + "`assign_task`" + ` multiple times in one response when adding several tasks.
 
 Take action now.`
 	}

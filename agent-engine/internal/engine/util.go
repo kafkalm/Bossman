@@ -39,7 +39,7 @@ func busMessageDeliverable(file *db.ProjectFile, projectID string, taskID *strin
 		TaskID:      taskID,
 		SenderID:    senderID,
 		SenderType:  "agent",
-		MessageType: EngineEventDeliverable,
+		MessageType: EngineEventTaskUpdated,
 		Content:     fmt.Sprintf("[agent] 已提交《%s》-> %s", title, tabLabel),
 		Metadata:    map[string]interface{}{"fileId": file.ID, "brief": brief, "fileType": fileType},
 		CreatedAt:   file.CreatedAt,

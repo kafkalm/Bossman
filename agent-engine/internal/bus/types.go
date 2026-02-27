@@ -9,7 +9,7 @@ type BusMessage struct {
 	TaskID      *string
 	SenderID    *string
 	SenderType  string // founder, agent, system
-	MessageType string // deliverable, status_update, discussion, task_assignment, ping
+	MessageType string // project.updated, task.updated, task.transitioned, engine.alert, ping
 	Content     string
 	Metadata    map[string]interface{}
 	CreatedAt   time.Time
