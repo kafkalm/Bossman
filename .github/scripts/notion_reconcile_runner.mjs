@@ -67,6 +67,8 @@ async function main() {
       body: issue.body || '',
       prUrl: issue.pull_request ? issue.html_url : null,
       hasOpenPr: Boolean(issue.pull_request && issue.state === 'open'),
+      createdAt: issue.created_at || null,
+      doneAt: issue.closed_at || null,
       syncedAt: new Date().toISOString(),
       projectPageId: portfolioProject.id,
     });

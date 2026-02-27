@@ -40,6 +40,9 @@ test('buildTaskProperties creates required Notion fields', () => {
     issueState: 'open',
     labels: [{ name: 'type:feature' }, { name: 'prio:p1' }],
     body: 'Estimate: L',
+    createdAt: '2026-02-20T00:00:00.000Z',
+    doneAt: '2026-02-22T12:00:00.000Z',
+    syncedAt: '2026-02-23T00:00:00.000Z',
     projectPageId: '31424215-b1ed-81d0-8d66-df4193c5838e',
   });
 
@@ -49,6 +52,12 @@ test('buildTaskProperties creates required Notion fields', () => {
   assert.equal(props.Estimate.select.name, 'L');
   assert.equal(props['Work Type'].select.name, 'feature');
   assert.equal(props['GitHub Item Key'].rich_text[0].text.content, 'kafkalm/Bossman#77');
+  assert.equal(props['Created At'].date.start, '2026-02-20T00:00:00.000Z');
+  assert.equal(props['Started At'].date.start, '2026-02-20T00:00:00.000Z');
+  assert.equal(props['Done At'].date.start, '2026-02-22T12:00:00.000Z');
+  assert.equal(props['Cycle Hours'].number, 60);
+  assert.equal(props['Lead Hours'].number, 60);
+  assert.equal(props['Done In Last 7d'].number, 1);
   assert.deepEqual(props.Project.relation, [{ id: '31424215-b1ed-81d0-8d66-df4193c5838e' }]);
 });
 
@@ -63,4 +72,26 @@ test('buildPortfolioProjectProperties creates stable project row properties', ()
   assert.equal(props.Status.select.name, 'Active');
   assert.equal(props['Repository URL'].url, 'https://github.com/kafkalm/rougeflipper');
   assert.equal(props['Last Synced At'].date.start, '2026-02-27T12:00:00.000Z');
+});
+
+test('buildTaskProperties keeps timeline fields empty for planned open issue', () => {
+  const props = buildTaskProperties({
+    repo: 'kafkalm/Bossman',
+    number: 78,
+    title: 'Backlog item',
+    url: 'https://github.com/kafkalm/Bossman/issues/78',
+    issueState: 'open',
+    labels: [{ name: 'status:backlog' }],
+    body: '',
+    createdAt: '2026-02-20T00:00:00.000Z',
+    syncedAt: '2026-02-23T00:00:00.000Z',
+  });
+
+  assert.equal(props.Status.select.name, 'Planned');
+  assert.equal(props['Created At'].date.start, '2026-02-20T00:00:00.000Z');
+  assert.equal(props['Started At'].date, null);
+  assert.equal(props['Done At'].date, null);
+  assert.equal(props['Cycle Hours'].number, null);
+  assert.equal(props['Lead Hours'].number, null);
+  assert.equal(props['Done In Last 7d'].number, 0);
 });

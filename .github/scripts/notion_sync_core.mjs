@@ -72,13 +72,37 @@ export function buildPortfolioProjectProperties({ repo, syncedAt = new Date().to
   };
 }
 
-export function buildTaskProperties({ repo, number, title, url, issueState, labels = [], body = '', prUrl = null, syncedAt = new Date().toISOString(), hasOpenPr = false, projectPageId = null }) {
+export function buildTaskProperties({
+  repo,
+  number,
+  title,
+  url,
+  issueState,
+  labels = [],
+  body = '',
+  prUrl = null,
+  syncedAt = new Date().toISOString(),
+  hasOpenPr = false,
+  projectPageId = null,
+  createdAt = null,
+  startedAt = null,
+  doneAt = null,
+}) {
   const notionStatus = mapNotionStatus({ issueState, labels, hasOpenPr });
   const workType = inferWorkType(labels);
   const priority = inferPriority(labels);
   const estimate = extractEstimate(body);
   const blocked = inferBlocked(labels);
   const itemKey = buildGithubItemKey(repo, number);
+  const createdDate = normalizeIso(createdAt) || normalizeIso(syncedAt);
+  const doneDate = normalizeIso(doneAt);
+  const startedDate = normalizeIso(startedAt)
+    || ((notionStatus === 'Doing' || notionStatus === 'Reviewing' || notionStatus === 'Blocked' || notionStatus === 'Done')
+      ? createdDate
+      : null);
+  const leadHours = hoursBetween(doneDate, createdDate);
+  const cycleHours = hoursBetween(doneDate, startedDate);
+  const doneInLast7d = isDoneInLast7d(doneDate, syncedAt) ? 1 : 0;
 
   const properties = {
     Title: {
@@ -108,6 +132,24 @@ export function buildTaskProperties({ repo, number, title, url, issueState, labe
     'GitHub URL': {
       url,
     },
+    'Created At': {
+      date: createdDate ? { start: createdDate } : null,
+    },
+    'Started At': {
+      date: startedDate ? { start: startedDate } : null,
+    },
+    'Done At': {
+      date: doneDate ? { start: doneDate } : null,
+    },
+    'Cycle Hours': {
+      number: cycleHours,
+    },
+    'Lead Hours': {
+      number: leadHours,
+    },
+    'Done In Last 7d': {
+      number: doneInLast7d,
+    },
     'Last Synced At': {
       date: { start: syncedAt },
     },
@@ -127,6 +169,32 @@ export function buildTaskProperties({ repo, number, title, url, issueState, labe
   }
 
   return properties;
+}
+
+function normalizeIso(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function hoursBetween(laterIso, earlierIso) {
+  if (!laterIso || !earlierIso) return null;
+  const later = new Date(laterIso).getTime();
+  const earlier = new Date(earlierIso).getTime();
+  if (Number.isNaN(later) || Number.isNaN(earlier)) return null;
+  const hours = (later - earlier) / (1000 * 60 * 60);
+  if (hours < 0) return 0;
+  return Math.round(hours * 10) / 10;
+}
+
+function isDoneInLast7d(doneIso, referenceIso) {
+  if (!doneIso) return false;
+  const done = new Date(doneIso).getTime();
+  const reference = new Date(referenceIso).getTime();
+  if (Number.isNaN(done) || Number.isNaN(reference)) return false;
+  if (done > reference) return false;
+  return reference - done <= 7 * 24 * 60 * 60 * 1000;
 }
 
 export function notionHeaders(token) {
@@ -296,6 +364,8 @@ export function toTaskPayloadFromIssue({ repo, issue, prUrl = null, hasOpenPr = 
     body: issue.body || '',
     prUrl,
     hasOpenPr,
+    createdAt: issue.created_at || null,
+    doneAt: issue.closed_at || null,
     syncedAt: new Date().toISOString(),
   };
 }

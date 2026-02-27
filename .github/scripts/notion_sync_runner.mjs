@@ -37,6 +37,8 @@ function toSyncInput({ payload, repo }) {
       body: pr.body || '',
       prUrl: pr.html_url,
       hasOpenPr: pr.state === 'open',
+      createdAt: pr.created_at || null,
+      doneAt: pr.closed_at || null,
       syncedAt: new Date().toISOString(),
     };
   }
