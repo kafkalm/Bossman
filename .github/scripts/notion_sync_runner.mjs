@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import {
   buildTaskProperties,
+  ensurePortfolioTaskRelation,
   toTaskPayloadFromIssue,
   upsertPortfolioProjectPage,
   upsertTaskPage,
@@ -70,6 +71,11 @@ async function main() {
     projectPageId: portfolioProject.id,
   });
   const result = await upsertTaskPage({ token: notionToken, dbId: taskDbId, properties });
+  await ensurePortfolioTaskRelation({
+    token: notionToken,
+    portfolioPageId: portfolioProject.id,
+    taskPageId: result.id,
+  });
 
   console.log(`Notion ${result.mode}: ${result.id}`);
   console.log(`Synced ${repo}#${syncInput.number}`);

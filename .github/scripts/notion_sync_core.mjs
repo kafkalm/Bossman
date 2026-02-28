@@ -151,7 +151,7 @@ export function buildTaskProperties({
   }
 
   if (projectPageId) {
-    properties.Project = {
+    properties['Portfolio DB'] = {
       relation: [{ id: projectPageId }],
     };
   }
@@ -320,6 +320,38 @@ export async function upsertTaskPage({ token, dbId, properties }) {
   });
 
   return { mode: 'created', id: created.id, deduped: 0 };
+}
+
+export async function ensurePortfolioTaskRelation({ token, portfolioPageId, taskPageId }) {
+  const page = await notionRequest(`/pages/${portfolioPageId}`, {
+    token,
+    method: 'GET',
+  });
+
+  const tasks = page?.properties?.Tasks;
+  if (!tasks || tasks.type !== 'relation') {
+    return { mode: 'skipped' };
+  }
+
+  const existing = new Set((tasks.relation || []).map((item) => item.id));
+  if (existing.has(taskPageId)) {
+    return { mode: 'unchanged' };
+  }
+
+  existing.add(taskPageId);
+  const relation = [...existing].map((id) => ({ id }));
+
+  await notionRequest(`/pages/${portfolioPageId}`, {
+    token,
+    method: 'PATCH',
+    body: {
+      properties: {
+        Tasks: { relation },
+      },
+    },
+  });
+
+  return { mode: 'updated' };
 }
 
 export function toTaskPayloadFromIssue({ repo, issue, prUrl = null, hasOpenPr = false }) {

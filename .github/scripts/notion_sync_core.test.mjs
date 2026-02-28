@@ -58,7 +58,7 @@ test('buildTaskProperties creates required Notion fields', () => {
   assert.equal(props['Cycle Hours'], undefined);
   assert.equal(props['Lead Hours'], undefined);
   assert.equal(props['Done In Last 7d'], undefined);
-  assert.deepEqual(props.Project.relation, [{ id: '31424215-b1ed-81d0-8d66-df4193c5838e' }]);
+  assert.deepEqual(props['Portfolio DB'].relation, [{ id: '31424215-b1ed-81d0-8d66-df4193c5838e' }]);
 });
 
 test('buildPortfolioProjectProperties creates stable project row properties', () => {

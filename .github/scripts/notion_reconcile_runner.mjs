@@ -1,5 +1,6 @@
 import {
   buildTaskProperties,
+  ensurePortfolioTaskRelation,
   upsertPortfolioProjectPage,
   upsertTaskPage,
 } from './notion_sync_core.mjs';
@@ -73,7 +74,12 @@ async function main() {
       projectPageId: portfolioProject.id,
     });
 
-    await upsertTaskPage({ token: notionToken, dbId: taskDbId, properties });
+    const result = await upsertTaskPage({ token: notionToken, dbId: taskDbId, properties });
+    await ensurePortfolioTaskRelation({
+      token: notionToken,
+      portfolioPageId: portfolioProject.id,
+      taskPageId: result.id,
+    });
     synced += 1;
   }
 
