@@ -5,8 +5,31 @@
 Set these repository secrets:
 
 - `NOTION_TOKEN`
-- `NOTION_TASK_DB_ID`
+- `NOTION_TASK_DB_ID` (shared single Task Mirror DB across repositories)
 - `NOTION_PORTFOLIO_DB_ID` (reserved for dashboard expansion)
+
+### Fast Path (macOS)
+
+Use the onboarding script to configure all three secrets automatically and upsert Portfolio row:
+
+```bash
+./scripts/onboard-repo.sh <owner/repo>
+```
+
+The script reads:
+
+- `NOTION_TOKEN` from Keychain service `codex/notion_token`
+- `NOTION_TASK_DB_ID` from built-in shared default value
+  - default: `31424215b1ed8133928ee6e272c4f8e6`
+  - optional override: script argument #2
+- `NOTION_PORTFOLIO_DB_ID` from the built-in default value
+  - default: `31424215b1ed81d08d66df4193c5838e`
+  - optional override: script argument #3
+
+During onboarding, the script also upserts one Portfolio row by `Project Key`:
+
+- if row exists: update `Last Synced At`, `Repository URL`, keep project active
+- if row missing: create a new row for the repo
 
 ## 2. Required Notion Database Properties
 
@@ -15,6 +38,7 @@ Task mirror database should contain:
 - `Title` (title)
 - `GitHub Item Key` (rich text, unique)
 - `GitHub Issue ID` (number)
+- `GitHub PR ID` (number)
 - `Repo` (select)
 - `Status` (select: Planned, Doing, Reviewing, Blocked, Done)
 - `Priority` (select: P0, P1, P2, P3)
@@ -24,6 +48,7 @@ Task mirror database should contain:
 - `PR URL` (url)
 - `Work Type` (select: feature, bug, chore, research)
 - `Last Synced At` (date)
+- `Project` (relation -> Portfolio DB)
 
 ## 3. Bootstrap Labels
 

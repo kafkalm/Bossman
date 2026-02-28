@@ -58,6 +58,7 @@ test('buildTaskProperties creates required Notion fields', () => {
   assert.equal(props['Cycle Hours'], undefined);
   assert.equal(props['Lead Hours'], undefined);
   assert.equal(props['Done In Last 7d'], undefined);
+  assert.equal(props['GitHub PR ID'], undefined);
   assert.deepEqual(props['Portfolio DB'].relation, [{ id: '31424215-b1ed-81d0-8d66-df4193c5838e' }]);
 });
 
@@ -94,4 +95,24 @@ test('buildTaskProperties keeps timeline fields empty for planned open issue', (
   assert.equal(props['Cycle Hours'], undefined);
   assert.equal(props['Lead Hours'], undefined);
   assert.equal(props['Done In Last 7d'], undefined);
+  assert.equal(props['GitHub PR ID'], undefined);
+});
+
+test('buildTaskProperties writes GitHub PR ID when provided', () => {
+  const props = buildTaskProperties({
+    repo: 'kafkalm/Bossman',
+    number: 79,
+    title: 'PR linked issue',
+    url: 'https://github.com/kafkalm/Bossman/issues/79',
+    issueState: 'open',
+    labels: [],
+    body: '',
+    prUrl: 'https://github.com/kafkalm/Bossman/pull/100',
+    prNumber: 100,
+    createdAt: '2026-02-20T00:00:00.000Z',
+    syncedAt: '2026-02-23T00:00:00.000Z',
+  });
+
+  assert.equal(props['GitHub PR ID'].number, 100);
+  assert.equal(props['PR URL'].url, 'https://github.com/kafkalm/Bossman/pull/100');
 });
