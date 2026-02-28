@@ -58,6 +58,9 @@ async function main() {
 
   let synced = 0;
   for (const issue of issues) {
+    if (issue.pull_request) {
+      continue;
+    }
     const properties = buildTaskProperties({
       repo,
       number: issue.number,
@@ -66,8 +69,9 @@ async function main() {
       issueState: issue.state,
       labels: issue.labels || [],
       body: issue.body || '',
-      prUrl: issue.pull_request ? issue.html_url : null,
-      hasOpenPr: Boolean(issue.pull_request && issue.state === 'open'),
+      prUrl: null,
+      prNumber: null,
+      hasOpenPr: false,
       createdAt: issue.created_at || null,
       doneAt: issue.closed_at || null,
       syncedAt: new Date().toISOString(),

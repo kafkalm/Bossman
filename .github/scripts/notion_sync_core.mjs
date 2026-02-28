@@ -81,6 +81,7 @@ export function buildTaskProperties({
   labels = [],
   body = '',
   prUrl = null,
+  prNumber = null,
   syncedAt = new Date().toISOString(),
   hasOpenPr = false,
   projectPageId = null,
@@ -148,6 +149,9 @@ export function buildTaskProperties({
 
   if (prUrl) {
     properties['PR URL'] = { url: prUrl };
+  }
+  if (prNumber !== null && prNumber !== undefined) {
+    properties['GitHub PR ID'] = { number: prNumber };
   }
 
   if (projectPageId) {
@@ -364,6 +368,7 @@ export function toTaskPayloadFromIssue({ repo, issue, prUrl = null, hasOpenPr = 
     labels: issue.labels || [],
     body: issue.body || '',
     prUrl,
+    prNumber: null,
     hasOpenPr,
     createdAt: issue.created_at || null,
     doneAt: issue.closed_at || null,
